@@ -358,7 +358,7 @@ def create_altair_chart(
     ).configure_legend(
         titleColor='#000',
         labelColor='#000',
-    ).configure(background='white').interactive()
+    ).configure(background='white')
     return chart
 
 
