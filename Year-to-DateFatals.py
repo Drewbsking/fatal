@@ -143,6 +143,7 @@ def create_altair_chart(
     show_history_trend: bool,
     show_focus_labels: bool,
     show_history_labels: bool,
+    title_text: str,
 ) -> alt.Chart:
     """Build the interactive Altair line chart and optional trend layers."""
     tidy = (
@@ -178,15 +179,6 @@ def create_altair_chart(
                 titleColor='#000',
             ),
         ),
-        color=alt.condition(
-            alt.datum.Year == focus_year,
-            alt.value('black'),
-            alt.Color(
-                'Year:N',
-                legend=None,
-                scale=alt.Scale(scheme='tableau10'),
-            ),
-        ),
         tooltip=[
             alt.Tooltip('Year:N'),
             alt.Tooltip('MonthLabel:N', title='Month'),
@@ -198,6 +190,22 @@ def create_altair_chart(
         strokeDash=alt.condition(alt.datum.Year == focus_year, alt.value([1, 0]), alt.value([4, 4])),
         size=alt.condition(alt.datum.Year == focus_year, alt.value(3), alt.value(1.5)),
         opacity=alt.condition(alt.datum.Year == focus_year, alt.value(1), alt.value(0.5)),
+        color=alt.condition(
+            alt.datum.Year == focus_year,
+            alt.value('black'),
+            alt.Color(
+                'Year:N',
+                legend=alt.Legend(
+                    title='Year',
+                    labelColor='#000',
+                    titleColor='#000',
+                    symbolType='stroke',
+                    symbolStrokeWidth=3,
+                    columns=2,
+                ),
+                scale=alt.Scale(scheme='tableau10'),
+            ),
+        ),
     )
 
     points = base.mark_point(
@@ -208,6 +216,11 @@ def create_altair_chart(
     ).encode(
         opacity=alt.condition(alt.datum.Year == focus_year, alt.value(1), alt.value(0.8)),
         shape=alt.Shape('Marker Shape:N', legend=None),
+        color=alt.condition(
+            alt.datum.Year == focus_year,
+            alt.value('black'),
+            alt.Color('Year:N', legend=None, scale=alt.Scale(scheme='tableau10')),
+        ),
     )
 
     layers = [line, points]
@@ -258,10 +271,10 @@ def create_altair_chart(
             y_line = np.clip(y_line, 0, None)
             hist_df = pd.DataFrame({'Month': x_line, 'Fatal Persons': y_line})
             hist_layer = alt.Chart(hist_df).mark_line(
-                strokeDash=[2, 2],
-                color='gray',
-                opacity=0.8,
-                size=1.5,
+                strokeDash=[6, 3],
+                color='#555555',
+                opacity=0.95,
+                size=2,
             ).encode(
                 x=alt.X('Month:Q', title=None),
                 y='Fatal Persons:Q',
@@ -322,7 +335,7 @@ def create_altair_chart(
         width=min(CHART_WIDTH, 850),
         height=min(CHART_HEIGHT, 520),
         title=alt.TitleParams(
-            text='Year-to-Date Fatalities by Month (2015–2025): Traffic-Related Deaths',
+            text=title_text,
             color='#000',
             fontSize=20,
             anchor='start',
@@ -358,18 +371,6 @@ def main():
     st.title("Year-to-Date Traffic Fatalities")
     st.caption("Visualize cumulative traffic-related fatalities by month and compare year-over-year trends.")
 
-    with st.sidebar:
-        st.header("Display Options (Book1 data)")
-        show_focus_trend = st.checkbox("Show focus-year trend line", value=True)
-        show_history_trend = st.checkbox("Show historical trend line", value=True)
-        label_mode = st.selectbox(
-            "Value label mode",
-            ["None", "Focus year", "Historical years", "All"],
-            index=0,
-        )
-        show_focus_labels = label_mode in {"Focus year", "All"}
-        show_history_labels = label_mode in {"Historical years", "All"}
-
     try:
         df_raw, data_source = load_dataframe(None, None)
     except (FileNotFoundError, ValueError) as exc:
@@ -386,18 +387,32 @@ def main():
     default_start = 2015 if min_year <= 2015 <= max_year else min_year
 
     with st.sidebar:
+        st.header("Years")
         start_year, end_year = st.slider(
             "Year range",
             min_year,
             max_year,
             (default_start, max_year),
         )
-        focus_options = years
+        show_history_trend = st.checkbox("Show historical trend line", value=True, key="history_trend")
+
+        st.header("Focus")
+        focus_options = list(reversed(years))
         focus_year = st.selectbox(
             "Focus year (highlighted)",
             focus_options,
-            index=len(focus_options) - 1,
+            index=0,
         )
+        show_focus_trend = st.checkbox("Show focus-year trend line", value=True, key="focus_trend")
+
+        st.header("Labels")
+        label_mode = st.selectbox(
+            "Value label mode",
+            ["None", "Focus year", "Historical years", "All"],
+            index=0,
+        )
+        show_focus_labels = label_mode in {"Focus year", "All"}
+        show_history_labels = label_mode in {"Historical years", "All"}
 
     slider_years = [year for year in years if start_year <= year <= end_year]
     display_years = sorted(set(slider_years + [focus_year]))
@@ -415,10 +430,13 @@ def main():
     st.markdown(f"**Data source:** `{data_source}`")
     displayed_text = ", ".join(str(year) for year in pivot_complete.columns)
     st.markdown(
-        f"Showing {len(pivot_complete.columns)} year(s): **{displayed_text}**."
+        f"Showing {len(pivot_complete.columns)} year(s): **{displayed_text}** (slider {start_year}–{end_year}, focus {focus_year})."
     )
 
     history_pivot = pivot_complete if len(pivot_complete.columns) > 1 else full_history_pivot
+
+    if start_year <= 2008:
+        st.warning("Data from 2008 and earlier reflects annual totals only (no month-by-month breakdown).")
 
     chart = create_altair_chart(
         pivot_complete,
@@ -429,6 +447,7 @@ def main():
         show_history_trend,
         show_focus_labels,
         show_history_labels,
+        title_text=f"Year-to-Date Fatalities ({start_year}–{end_year}) — Focus {focus_year}",
     )
     st.altair_chart(chart, use_container_width=False)
     png_bytes = chart_to_png_bytes(chart)
