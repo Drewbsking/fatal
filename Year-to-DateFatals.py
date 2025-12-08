@@ -445,11 +445,6 @@ def main():
     if start_year <= 2008:
         st.warning("Data from 2008 and earlier reflects annual totals only (no month-by-month breakdown).")
 
-    if 'chart_reset_token' not in st.session_state:
-        st.session_state['chart_reset_token'] = 0
-    if st.button("Reset zoom/view"):
-        st.session_state['chart_reset_token'] += 1
-
     chart = create_altair_chart(
         pivot_complete,
         processed[processed['Year'].isin(display_years)],
@@ -461,7 +456,7 @@ def main():
         show_history_labels,
         title_text=f"Year-to-Date Fatalities ({start_year}–{end_year}) — Focus {focus_year}",
     )
-    st.altair_chart(chart, use_container_width=False, key=f"line_chart_{st.session_state['chart_reset_token']}")
+    st.altair_chart(chart, use_container_width=False)
     png_bytes = chart_to_png_bytes(chart)
     if png_bytes:
         st.download_button(
