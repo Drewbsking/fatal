@@ -435,7 +435,6 @@ def main():
     if full_history_pivot.empty:
         full_history_pivot = pivot_complete.copy()
 
-    st.markdown(f"**Data source:** `{data_source}`")
     displayed_text = ", ".join(str(year) for year in pivot_complete.columns)
     st.markdown(
         f"Showing {len(pivot_complete.columns)} year(s): **{displayed_text}** (slider {start_year}–{end_year}, focus {focus_year})."
