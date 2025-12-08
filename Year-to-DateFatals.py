@@ -110,6 +110,10 @@ def preprocess_crash_data(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_cumulative_table(data: pd.DataFrame, start_year: int, focus_year: int) -> pd.DataFrame:
     """Aggregate fatalities by month and compute the cumulative totals."""
+    if data.empty:
+        return pd.DataFrame()
+
+    current_year_global = data['Year'].max()
     subset = data[(data['Year'] >= start_year) & (data['Year'] <= focus_year)].copy()
     if subset.empty:
         return pd.DataFrame()
@@ -123,9 +127,13 @@ def build_cumulative_table(data: pd.DataFrame, start_year: int, focus_year: int)
 
     merged = pd.merge(all_months, monthly, on=['Year', 'Month'], how='left')
     merged['last_month_observed'] = merged['Year'].map(last_month_by_year)
-    merged = merged[merged['last_month_observed'].notna()]
-    merged = merged[merged['Month'] <= merged['last_month_observed']]
-    merged = merged.drop(columns='last_month_observed').fillna(0)
+    merged['max_month_allowed'] = np.where(
+        (merged['Year'] == current_year_global) & merged['last_month_observed'].notna(),
+        merged['last_month_observed'],
+        12,
+    )
+    merged = merged[merged['Month'] <= merged['max_month_allowed']]
+    merged = merged.drop(columns=['last_month_observed', 'max_month_allowed']).fillna(0)
 
     if merged.empty:
         return pd.DataFrame()
