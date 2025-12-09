@@ -142,6 +142,175 @@ def build_cumulative_table(data: pd.DataFrame, start_year: int, focus_year: int)
     return pivot
 
 
+def compute_monthly_average_from_pivot(pivot_complete: pd.DataFrame) -> pd.DataFrame:
+    """Return average fatalities per month using the non-cumulative increments from the pivot."""
+    if pivot_complete.empty:
+        return pd.DataFrame()
+    pivot_recent = pivot_complete.loc[:, [c for c in pivot_complete.columns if int(c) > 2008]]
+    if pivot_recent.empty:
+        pivot_recent = pivot_complete
+    monthly_inc = pivot_recent.diff().fillna(pivot_recent)
+    avg = monthly_inc.mean(axis=1).reset_index()
+    avg.columns = ['Month', 'Average Fatalities']
+    avg['MonthLabel'] = avg['Month'].apply(lambda idx: MONTH_LABELS[int(idx) - 1])
+    avg['Average Fatalities'] = avg['Average Fatalities'].round(2)
+    return avg
+
+
+def create_average_bar_chart(avg_df: pd.DataFrame, subtitle: str) -> alt.Chart:
+    """Build a bar chart showing average fatalities per month."""
+    if avg_df.empty:
+        return alt.Chart(pd.DataFrame({'Month': [], 'Average Fatalities': []}))
+    chart = (
+        alt.Chart(avg_df)
+        .mark_bar(color='#d04b4b', opacity=0.85)
+        .encode(
+            x=alt.X(
+                'Month:O',
+                sort=list(range(1, 13)),
+                title='Month',
+                axis=alt.Axis(
+                    labelExpr="['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][datum.value - 1]",
+                    labelColor='#000',
+                    tickColor='#000',
+                    titleColor='#000',
+                    domainColor='#000',
+                ),
+            ),
+            y=alt.Y(
+                'Average Fatalities:Q',
+                title='Average fatalities per month',
+                axis=alt.Axis(labelColor='#000', tickColor='#000', domainColor='#000', titleColor='#000'),
+            ),
+            tooltip=[
+                alt.Tooltip('MonthLabel:N', title='Month'),
+                alt.Tooltip('Average Fatalities:Q', title='Average', format='.2f'),
+            ],
+        )
+        .properties(
+            width=min(CHART_WIDTH, 850),
+            height=260,
+            title=alt.TitleParams(text=subtitle, color='#000', fontSize=16, anchor='start'),
+        )
+        .configure_axis(labelColor='#000', titleColor='#000', tickColor='#000', domainColor='#000')
+        .configure_view(stroke='transparent')
+        .configure(background='white')
+    )
+    return chart
+
+
+def create_ranking_bar_chart(year_totals: pd.Series, focus_year: int, title_text: str | None = None) -> alt.Chart:
+    """Horizontal bar chart ranking years (least → most fatalities)."""
+    if year_totals.empty:
+        return alt.Chart(pd.DataFrame({'Year': [], 'Fatalities': []}))
+    df = year_totals.sort_values().reset_index()
+    df.columns = ['Year', 'Fatalities']
+    df['Year'] = df['Year'].astype(int)
+    df['Focus'] = df['Year'] == focus_year
+    chart = (
+        alt.Chart(df)
+        .mark_bar()
+        .encode(
+            y=alt.Y('Year:N', sort=df['Year'].tolist(), title='Year'),
+            x=alt.X('Fatalities:Q', title='Total fatalities'),
+            color=alt.condition(
+                alt.datum.Focus,
+                alt.value('black'),
+                alt.Color(
+                    'Year:N',
+                    legend=alt.Legend(title='Year', columns=2, labelColor='#000', titleColor='#000'),
+                    scale=alt.Scale(scheme='tableau10'),
+                ),
+            ),
+            tooltip=['Year', 'Fatalities'],
+        )
+        .properties(
+            width=min(CHART_WIDTH, 850),
+            height=280,
+            title=alt.TitleParams(text=title_text or 'Year ranking (least → most fatalities)', color='#000', fontSize=16, anchor='start'),
+        )
+        .configure_axis(labelColor='#000', titleColor='#000', tickColor='#000', domainColor='#000')
+        .configure_view(stroke='transparent')
+        .configure(background='white')
+    )
+    return chart
+
+
+def create_index_chart(index_df: pd.DataFrame, title_text: str | None = None) -> alt.Chart:
+    """Bar chart showing observed vs expected index for the focus year."""
+    if index_df.empty:
+        return alt.Chart(pd.DataFrame({'Month': [], 'IndexValue': []}))
+    bars = (
+        alt.Chart(index_df)
+        .mark_bar()
+        .encode(
+            x=alt.X(
+                'Month:O',
+                sort=list(range(1, 13)),
+                title='Month',
+                axis=alt.Axis(labelColor='#000', tickColor='#000', domainColor='#000', titleColor='#000'),
+            ),
+            y=alt.Y(
+                'IndexValue:Q',
+                title='Index (observed / 5-year avg)',
+                axis=alt.Axis(labelColor='#000', tickColor='#000', domainColor='#000', titleColor='#000'),
+            ),
+            color=alt.condition(alt.datum.IndexValue >= 1, alt.value('#d04b4b'), alt.value('#3c7dcf')),
+            tooltip=[
+                alt.Tooltip('MonthLabel:N', title='Month'),
+                alt.Tooltip('Observed:Q', title='Observed', format=','),
+                alt.Tooltip('Expected:Q', title='5-yr avg', format=',.2f'),
+                alt.Tooltip('IndexValue:Q', title='Index', format='.2f'),
+            ],
+        )
+    )
+    baseline_rule = alt.Chart(pd.DataFrame({'y': [1]})).mark_rule(color='#000', strokeDash=[4, 4]).encode(y='y:Q')
+    chart = alt.layer(bars, baseline_rule).properties(
+        width=min(CHART_WIDTH, 850),
+        height=260,
+        title=alt.TitleParams(text=title_text or 'Focus month index (observed vs 5-year avg)', color='#000', fontSize=16, anchor='start'),
+    ).configure_axis(labelColor='#000', titleColor='#000', tickColor='#000', domainColor='#000'
+    ).configure_view(stroke='transparent'
+    ).configure(background='white')
+    return chart
+
+
+def create_rolling_chart(monthly_totals: pd.DataFrame, title_text: str | None = None) -> alt.Chart:
+    """Line chart of 12-month rolling fatalities."""
+    if monthly_totals.empty or 'Rolling12' not in monthly_totals:
+        return alt.Chart(pd.DataFrame({'Date': [], 'Rolling12': []}))
+    base_line = alt.Chart(monthly_totals).mark_line(color='#333').encode(
+        x=alt.X('Date:T', title='Month', axis=alt.Axis(labelColor='#000', tickColor='#000', domainColor='#000', titleColor='#000')),
+        y=alt.Y('Rolling12:Q', title='12-month rolling fatalities', axis=alt.Axis(labelColor='#000', tickColor='#000', domainColor='#000', titleColor='#000')),
+        tooltip=[
+            alt.Tooltip('Date:T', title='Month'),
+            alt.Tooltip('Rolling12:Q', title='Rolling 12-mo', format=',.0f'),
+        ],
+    )
+
+    may_points = monthly_totals[pd.to_datetime(monthly_totals['Date']).dt.month == 5]
+    layers = [base_line]
+    if not may_points.empty:
+        markers = alt.Chart(may_points).mark_point(color='black', size=50).encode(
+            x='Date:T',
+            y='Rolling12:Q',
+            tooltip=[
+                alt.Tooltip('Date:T', title='Month'),
+                alt.Tooltip('Rolling12:Q', title='Rolling 12-mo', format=',.0f'),
+            ],
+        )
+        layers.append(markers)
+
+    chart = alt.layer(*layers).properties(
+        width=min(CHART_WIDTH, 850),
+        height=260,
+        title=alt.TitleParams(text=title_text or '12-month rolling fatalities', color='#000', fontSize=16, anchor='start'),
+    ).configure_axis(labelColor='#000', titleColor='#000', tickColor='#000', domainColor='#000'
+    ).configure_view(stroke='transparent'
+    ).configure(background='white')
+    return chart
+
+
 def create_altair_chart(
     pivot_complete: pd.DataFrame,
     filtered_data: pd.DataFrame,
@@ -355,6 +524,8 @@ def create_altair_chart(
         gridDash=[3, 3],
         labelColor='#000',
         titleColor='#000',
+        tickColor='#000',
+        domainColor='#000',
     ).configure_legend(
         titleColor='#000',
         labelColor='#000',
@@ -445,9 +616,11 @@ def main():
     if start_year <= 2008:
         st.warning("Data from 2008 and earlier reflects annual totals only (no month-by-month breakdown).")
 
+    filtered_subset = processed[processed['Year'].isin(display_years)]
+
     chart = create_altair_chart(
         pivot_complete,
-        processed[processed['Year'].isin(display_years)],
+        filtered_subset,
         history_pivot,
         focus_year,
         show_focus_trend,
@@ -466,6 +639,98 @@ def main():
             mime="image/png",
             type="primary",
         )
+
+    # From here down, use full-history data (not filtered by slider)
+    full_pivot = full_history_pivot if not full_history_pivot.empty else pivot_complete
+    year_totals_all = processed.groupby('Year')['Fatal Persons'].sum()
+    latest_year = int(max([y for y in year_totals_all.index.astype(int) if y > 2008])) if not year_totals_all.empty else focus_year
+
+    if not year_totals_all.empty:
+        focus_total = int(year_totals_all.get(latest_year, 0))
+        best_year = int(year_totals_all.idxmax())
+        best_value = int(year_totals_all.max())
+        worst_year = int(year_totals_all.idxmin())
+        worst_value = int(year_totals_all.min())
+
+        prev_total = year_totals_all.get(latest_year - 1)
+        pct_change_prior = (
+            ((focus_total - prev_total) / prev_total) * 100
+            if prev_total and prev_total > 0
+            else None
+        )
+
+        all_mean = year_totals_all.mean() if len(year_totals_all) > 0 else None
+        pct_vs_all = (
+            ((focus_total - all_mean) / all_mean) * 100
+            if all_mean and all_mean > 0
+            else None
+        )
+
+        st.markdown("---")
+        st.subheader("Quick stats (all years)")
+        col_focus, col_best, col_prior, col_all = st.columns(4)
+        col_focus.metric(f"YTD fatalities ({latest_year})", f"{focus_total:,}")
+        col_best.metric(
+            "Best/Worst overall",
+            f"{best_year}: {best_value:,}",
+            f"Worst {worst_year}: {worst_value:,}",
+        )
+        col_prior.metric(
+            "Focus vs prior year",
+            f"{focus_total:,}",
+            f"{pct_change_prior:+.1f}% vs {latest_year - 1}" if pct_change_prior is not None else "N/A",
+        )
+        col_all.metric(
+            "Focus vs all-years avg",
+            f"{focus_total:,}",
+            f"{pct_vs_all:+.1f}% vs all-years avg" if pct_vs_all is not None else "N/A",
+        )
+
+    # Index chart using full history (5-year avg baseline before focus), fixed focus = most recent year > 2008
+    safe_pivot = full_pivot.loc[:, [c for c in full_pivot.columns if int(c) > 2008]]
+    focus_year_index = max(safe_pivot.columns.astype(int)) if not safe_pivot.empty else None
+    monthly_inc_all = safe_pivot.diff().fillna(safe_pivot)
+    prev_years = [y for y in monthly_inc_all.columns if int(y) < int(focus_year_index)] if focus_year_index else []
+    prev_years = sorted(prev_years)[-5:]
+    focus_monthly = monthly_inc_all[focus_year_index] if focus_year_index in monthly_inc_all.columns else pd.Series(dtype=float)
+    baseline_monthly = monthly_inc_all[prev_years].mean(axis=1) if prev_years else pd.Series(0, index=monthly_inc_all.index)
+    index_df = pd.DataFrame({
+        'Month': monthly_inc_all.index,
+        'Observed': focus_monthly.reindex(monthly_inc_all.index).fillna(0),
+        'Expected': baseline_monthly.fillna(0),
+    })
+    index_df['MonthLabel'] = index_df['Month'].apply(lambda m: MONTH_LABELS[int(m) - 1])
+    index_df['IndexValue'] = np.where(
+        index_df['Expected'] > 0,
+        index_df['Observed'] / index_df['Expected'],
+        0,
+    )
+    index_chart = create_index_chart(index_df, title_text=f"Focus month index ({latest_year} vs 5-year avg)")
+    st.altair_chart(index_chart, use_container_width=False)
+
+    # Year ranking as bar chart (all years)
+    focus_for_ranking = latest_year if not year_totals_all.empty else focus_year
+    ranking_chart = create_ranking_bar_chart(year_totals_all, focus_for_ranking, title_text=f"Year ranking (focus {latest_year})")
+    st.altair_chart(ranking_chart, use_container_width=False)
+
+    # Average monthly bar chart (all years)
+    avg_df = compute_monthly_average_from_pivot(full_pivot)
+    if not avg_df.empty:
+        avg_chart = create_average_bar_chart(avg_df, f"Average monthly fatalities across all years (current year {latest_year})")
+        st.altair_chart(avg_chart, use_container_width=False)
+
+    # 12-month rolling fatalities (post-2008, all years)
+    monthly_totals = (
+        processed[processed['Year'] > 2008]
+        .groupby(['Year', 'Month'])['Fatal Persons']
+        .sum()
+        .reset_index()
+        .sort_values(['Year', 'Month'])
+    )
+    monthly_totals['Date'] = pd.to_datetime(dict(year=monthly_totals['Year'], month=monthly_totals['Month'], day=1))
+    monthly_totals['Rolling12'] = monthly_totals['Fatal Persons'].rolling(window=12).sum()
+    rolling_chart = create_rolling_chart(monthly_totals[['Date', 'Rolling12']].dropna(), title_text=f"12-month rolling fatalities (current year {latest_year})")
+    st.altair_chart(rolling_chart, use_container_width=False)
 
     with st.expander("Show cumulative table"):
         formatted = pivot_complete.round(0).fillna(0).astype(int)
