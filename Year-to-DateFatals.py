@@ -608,10 +608,12 @@ def main():
     years = sorted(processed['Year'].unique())
     min_year, max_year = years[0], years[-1]
     default_start = 2015 if min_year <= 2015 <= max_year else min_year
+    current_year = pd.Timestamp.today().year
     report_year = get_latest_comparison_year(processed)
     report_cutoff_month = get_ytd_cutoff_month(processed, report_year)
     report_cutoff_label = MONTH_LABELS[report_cutoff_month - 1]
     default_end = report_year if report_year in years else max_year
+    default_focus_year = current_year if current_year in years else report_year
 
     with st.sidebar:
         st.caption(f"Source: `{Path(data_source).name}`")
@@ -629,7 +631,7 @@ def main():
         focus_year = st.selectbox(
             "Focus year (highlighted)",
             focus_options,
-            index=focus_options.index(report_year) if report_year in focus_options else 0,
+            index=focus_options.index(default_focus_year) if default_focus_year in focus_options else 0,
         )
         show_focus_trend = st.checkbox("Show focus-year trend line", value=True, key="focus_trend")
 
@@ -645,8 +647,8 @@ def main():
     slider_years = [year for year in years if start_year <= year <= end_year]
     display_years = sorted(set(slider_years + [focus_year]))
     pivot_span_start, pivot_span_end = display_years[0], display_years[-1]
-    chart_cutoff_month = get_ytd_cutoff_month(processed, focus_year)
-    chart_cutoff_label = MONTH_LABELS[chart_cutoff_month - 1]
+    chart_cutoff_month = report_cutoff_month
+    chart_cutoff_label = report_cutoff_label
 
     pivot_full = build_cumulative_table(processed, pivot_span_start, pivot_span_end, cutoff_month=chart_cutoff_month)
     if pivot_full.empty:
