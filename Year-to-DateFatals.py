@@ -523,6 +523,7 @@ def create_altair_chart(
                 fontSize=11,
                 color='black',
             ).encode(
+                detail=alt.Detail('YearLabel:N'),
                 x=alt.X('MonthLabel:N', sort=MONTH_LABELS),
                 y='Fatal Persons:Q',
                 text=alt.Text('Fatal Persons:Q', format=','),
@@ -537,6 +538,7 @@ def create_altair_chart(
                 fontSize=10,
                 color='#444',
             ).encode(
+                detail=alt.Detail('YearLabel:N'),
                 x=alt.X('MonthLabel:N', sort=MONTH_LABELS),
                 y='Fatal Persons:Q',
                 text=alt.Text('Fatal Persons:Q', format=','),
@@ -661,8 +663,8 @@ def main():
 
     displayed_text = ", ".join(str(year) for year in pivot_complete.columns)
     st.markdown(
-        f"Showing {len(pivot_complete.columns)} year(s): **{displayed_text}** through **{chart_cutoff_label} {focus_year}** "
-        f"(slider {start_year}–{end_year}, focus {focus_year})."
+        f"Showing {len(pivot_complete.columns)} year(s): **{displayed_text}** through **{chart_cutoff_label}** "
+        f"(comparison window from {report_year}, focus {focus_year}, slider {start_year}–{end_year})."
     )
 
     history_pivot = pivot_complete if len(pivot_complete.columns) > 1 else full_history_pivot
