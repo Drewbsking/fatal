@@ -16,7 +16,7 @@ st.set_page_config(
 )
 
 DEFAULT_SHEET_NAME = "Crash Summaries"
-DEFAULT_FILES = ("Book1.xlsx", "Book1.xls", "Book1.csv")
+DEFAULT_FILES = ("Fatals.csv", "Fatals.xlsx", "Fatals.xls")
 MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 CHART_WIDTH = 820  # ~8.5in at ~96dpi
@@ -108,30 +108,48 @@ def preprocess_crash_data(df: pd.DataFrame) -> pd.DataFrame:
     return clean
 
 
-def build_cumulative_table(data: pd.DataFrame, start_year: int, focus_year: int) -> pd.DataFrame:
+def get_latest_comparison_year(data: pd.DataFrame) -> int:
+    """Return the latest year with month-level data when available."""
+    years_post_2008 = sorted(int(year) for year in data['Year'].dropna().unique() if int(year) > 2008)
+    if years_post_2008:
+        return years_post_2008[-1]
+    return int(data['Year'].max())
+
+
+def get_ytd_cutoff_month(data: pd.DataFrame, comparison_year: int) -> int:
+    """Return the latest observed month for the comparison year."""
+    year_months = data.loc[data['Year'] == comparison_year, 'Month'].dropna()
+    if year_months.empty:
+        return 12
+    return int(year_months.max())
+
+
+def build_cumulative_table(
+    data: pd.DataFrame,
+    start_year: int,
+    end_year: int,
+    cutoff_month: int | None = None,
+) -> pd.DataFrame:
     """Aggregate fatalities by month and compute the cumulative totals."""
     if data.empty:
         return pd.DataFrame()
 
-    current_year_global = data['Year'].max()
-    subset = data[(data['Year'] >= start_year) & (data['Year'] <= focus_year)].copy()
+    subset = data[(data['Year'] >= start_year) & (data['Year'] <= end_year)].copy()
     if subset.empty:
         return pd.DataFrame()
 
     all_months = pd.DataFrame(
-        [(year, month) for year in range(start_year, focus_year + 1) for month in range(1, 13)],
+        [(year, month) for year in range(start_year, end_year + 1) for month in range(1, 13)],
         columns=['Year', 'Month'],
     )
     monthly = subset.groupby(['Year', 'Month'])['Fatal Persons'].sum().reset_index()
     last_month_by_year = subset.groupby('Year')['Month'].max()
 
     merged = pd.merge(all_months, monthly, on=['Year', 'Month'], how='left')
-    merged['last_month_observed'] = merged['Year'].map(last_month_by_year)
-    merged['max_month_allowed'] = np.where(
-        (merged['Year'] == current_year_global) & merged['last_month_observed'].notna(),
-        merged['last_month_observed'],
-        12,
-    )
+    merged['last_month_observed'] = merged['Year'].map(last_month_by_year).fillna(0).astype(int)
+    merged['max_month_allowed'] = merged['last_month_observed']
+    if cutoff_month is not None:
+        merged['max_month_allowed'] = merged['max_month_allowed'].clip(upper=int(cutoff_month))
     merged = merged[merged['Month'] <= merged['max_month_allowed']]
     merged = merged.drop(columns=['last_month_observed', 'max_month_allowed']).fillna(0)
 
@@ -140,6 +158,13 @@ def build_cumulative_table(data: pd.DataFrame, start_year: int, focus_year: int)
 
     pivot = merged.pivot(index='Month', columns='Year', values='Fatal Persons').cumsum()
     return pivot
+
+
+def get_ytd_totals(pivot: pd.DataFrame) -> pd.Series:
+    """Return YTD totals from the last available row in each year column."""
+    if pivot.empty:
+        return pd.Series(dtype=float)
+    return pivot.ffill().iloc[-1].fillna(0)
 
 
 def compute_monthly_average_from_pivot(pivot_complete: pd.DataFrame) -> pd.DataFrame:
@@ -550,8 +575,17 @@ def main():
     st.title("Year-to-Date Traffic Fatalities")
     st.caption("Visualize cumulative traffic-related fatalities by month and compare year-over-year trends.")
 
+    with st.sidebar:
+        uploaded_file = st.file_uploader(
+            "Optional data file",
+            type=['csv', 'xls', 'xlsx'],
+            help="If omitted, the app loads Fatals.csv from the repo.",
+        )
+
     try:
-        df_raw, data_source = load_dataframe(None, None)
+        uploaded_bytes = uploaded_file.getvalue() if uploaded_file is not None else None
+        uploaded_name = uploaded_file.name if uploaded_file is not None else None
+        df_raw, data_source = load_dataframe(uploaded_bytes, uploaded_name)
     except (FileNotFoundError, ValueError) as exc:
         st.error(str(exc))
         st.stop()
@@ -564,8 +598,12 @@ def main():
     years = sorted(processed['Year'].unique())
     min_year, max_year = years[0], years[-1]
     default_start = 2015 if min_year <= 2015 <= max_year else min_year
+    latest_year = get_latest_comparison_year(processed)
+    cutoff_month = get_ytd_cutoff_month(processed, latest_year)
+    cutoff_label = MONTH_LABELS[cutoff_month - 1]
 
     with st.sidebar:
+        st.caption(f"Source: `{Path(data_source).name}`")
         st.header("Years")
         start_year, end_year = st.slider(
             "Year range",
@@ -597,18 +635,19 @@ def main():
     display_years = sorted(set(slider_years + [focus_year]))
     pivot_span_start, pivot_span_end = display_years[0], display_years[-1]
 
-    pivot_full = build_cumulative_table(processed, pivot_span_start, pivot_span_end)
+    pivot_full = build_cumulative_table(processed, pivot_span_start, pivot_span_end, cutoff_month=cutoff_month)
     if pivot_full.empty:
         st.warning("Not enough data to build the visualization. Try adjusting the selected years.")
         st.stop()
     pivot_complete = pivot_full.loc[:, [col for col in display_years if col in pivot_full.columns]]
-    full_history_pivot = build_cumulative_table(processed, years[0], years[-1])
+    full_history_pivot = build_cumulative_table(processed, years[0], years[-1], cutoff_month=cutoff_month)
     if full_history_pivot.empty:
         full_history_pivot = pivot_complete.copy()
 
     displayed_text = ", ".join(str(year) for year in pivot_complete.columns)
     st.markdown(
-        f"Showing {len(pivot_complete.columns)} year(s): **{displayed_text}** (slider {start_year}–{end_year}, focus {focus_year})."
+        f"Showing {len(pivot_complete.columns)} year(s): **{displayed_text}** through **{cutoff_label} {latest_year}** "
+        f"(slider {start_year}–{end_year}, focus {focus_year})."
     )
 
     history_pivot = pivot_complete if len(pivot_complete.columns) > 1 else full_history_pivot
@@ -640,26 +679,25 @@ def main():
             type="primary",
         )
 
-    # From here down, use full-history data (not filtered by slider)
+    # From here down, use full-history YTD data (same cutoff month for every year)
     full_pivot = full_history_pivot if not full_history_pivot.empty else pivot_complete
-    year_totals_all = processed.groupby('Year')['Fatal Persons'].sum()
-    latest_year = int(max([y for y in year_totals_all.index.astype(int) if y > 2008])) if not year_totals_all.empty else focus_year
+    year_totals_ytd = get_ytd_totals(full_pivot)
 
-    if not year_totals_all.empty:
-        focus_total = int(year_totals_all.get(latest_year, 0))
-        best_year = int(year_totals_all.idxmax())
-        best_value = int(year_totals_all.max())
-        worst_year = int(year_totals_all.idxmin())
-        worst_value = int(year_totals_all.min())
+    if not year_totals_ytd.empty:
+        focus_total = int(year_totals_ytd.get(latest_year, 0))
+        best_year = int(year_totals_ytd.idxmax())
+        best_value = int(year_totals_ytd.max())
+        worst_year = int(year_totals_ytd.idxmin())
+        worst_value = int(year_totals_ytd.min())
 
-        prev_total = year_totals_all.get(latest_year - 1)
+        prev_total = year_totals_ytd.get(latest_year - 1)
         pct_change_prior = (
             ((focus_total - prev_total) / prev_total) * 100
             if prev_total and prev_total > 0
             else None
         )
 
-        all_mean = year_totals_all.mean() if len(year_totals_all) > 0 else None
+        all_mean = year_totals_ytd.mean() if len(year_totals_ytd) > 0 else None
         pct_vs_all = (
             ((focus_total - all_mean) / all_mean) * 100
             if all_mean and all_mean > 0
@@ -667,11 +705,11 @@ def main():
         )
 
         st.markdown("---")
-        st.subheader("Quick stats (all years)")
+        st.subheader(f"Quick stats through {cutoff_label} (all years)")
         col_focus, col_best, col_prior, col_all = st.columns(4)
         col_focus.metric(f"YTD fatalities ({latest_year})", f"{focus_total:,}")
         col_best.metric(
-            "Best/Worst overall",
+            f"Best/Worst through {cutoff_label}",
             f"{best_year}: {best_value:,}",
             f"Worst {worst_year}: {worst_value:,}",
         )
@@ -686,7 +724,7 @@ def main():
             f"{pct_vs_all:+.1f}% vs all-years avg" if pct_vs_all is not None else "N/A",
         )
 
-    # Index chart using full history (5-year avg baseline before focus), fixed focus = most recent year > 2008
+    # Index chart using full YTD history (5-year avg baseline before focus)
     safe_pivot = full_pivot.loc[:, [c for c in full_pivot.columns if int(c) > 2008]]
     focus_year_index = max(safe_pivot.columns.astype(int)) if not safe_pivot.empty else None
     monthly_inc_all = safe_pivot.diff().fillna(safe_pivot)
@@ -705,18 +743,18 @@ def main():
         index_df['Observed'] / index_df['Expected'],
         0,
     )
-    index_chart = create_index_chart(index_df, title_text=f"Focus month index ({latest_year} vs 5-year avg)")
+    index_chart = create_index_chart(index_df, title_text=f"Focus month index ({latest_year} vs 5-year avg through {cutoff_label})")
     st.altair_chart(index_chart, use_container_width=False)
 
-    # Year ranking as bar chart (all years)
-    focus_for_ranking = latest_year if not year_totals_all.empty else focus_year
-    ranking_chart = create_ranking_bar_chart(year_totals_all, focus_for_ranking, title_text=f"Year ranking (focus {latest_year})")
+    # Year ranking as bar chart (all years, same YTD cutoff)
+    focus_for_ranking = latest_year if not year_totals_ytd.empty else focus_year
+    ranking_chart = create_ranking_bar_chart(year_totals_ytd, focus_for_ranking, title_text=f"Year ranking through {cutoff_label} (focus {latest_year})")
     st.altair_chart(ranking_chart, use_container_width=False)
 
-    # Average monthly bar chart (all years)
+    # Average monthly bar chart (all years, same YTD cutoff)
     avg_df = compute_monthly_average_from_pivot(full_pivot)
     if not avg_df.empty:
-        avg_chart = create_average_bar_chart(avg_df, f"Average monthly fatalities across all years (current year {latest_year})")
+        avg_chart = create_average_bar_chart(avg_df, f"Average monthly fatalities through {cutoff_label} across all years")
         st.altair_chart(avg_chart, use_container_width=False)
 
     # 12-month rolling fatalities (post-2008, all years)

@@ -1,1 +1,7 @@
+altair
+numpy
+openpyxl
+pandas
+streamlit
 vl-convert-python
+xlrd
