@@ -34,6 +34,18 @@ MARKER_SHAPES = [
     'triangle',
     'diamond',
 ]
+TABLEAU_COLORS = [
+    '#4c78a8',
+    '#f58518',
+    '#e45756',
+    '#72b7b2',
+    '#54a24b',
+    '#eeca3b',
+    '#b279a2',
+    '#ff9da6',
+    '#9d755d',
+    '#bab0ac',
+]
 
 
 def resolve_default_dataset() -> Path:
@@ -112,6 +124,15 @@ def get_latest_comparison_year(data: pd.DataFrame) -> int:
     """Return the latest year with month-level data when available."""
     years_post_2008 = sorted(int(year) for year in data['Year'].dropna().unique() if int(year) > 2008)
     if years_post_2008:
+        month_counts = (
+            data.loc[data['Year'].isin(years_post_2008)]
+            .groupby('Year')['Month']
+            .nunique()
+            .sort_index()
+        )
+        substantive_years = [int(year) for year, count in month_counts.items() if int(count) >= 2]
+        if substantive_years:
+            return substantive_years[-1]
         return years_post_2008[-1]
     return int(data['Year'].max())
 
@@ -354,6 +375,7 @@ def create_altair_chart(
     tidy['Year'] = tidy['Year'].astype(int)
     tidy['Month'] = tidy['Month'].astype(int)
     tidy['MonthLabel'] = tidy['Month'].apply(lambda idx: MONTH_LABELS[idx - 1])
+    tidy['YearLabel'] = tidy['Year'].astype(str)
     tidy['Marker Shape'] = tidy['Year'].map(
         {year: MARKER_SHAPES[i % len(MARKER_SHAPES)] for i, year in enumerate(sorted(tidy['Year'].unique()))}
     )
@@ -362,7 +384,12 @@ def create_altair_chart(
     tidy['LineSize'] = tidy['IsFocus'].map({True: 3.0, False: 1.5})
     tidy['LineOpacity'] = tidy['IsFocus'].map({True: 1.0, False: 0.5})
     tidy['PointOpacity'] = tidy['IsFocus'].map({True: 1.0, False: 0.8})
-    tidy['LineColor'] = np.where(tidy['IsFocus'], 'black', '#4c78a8')
+    sorted_years = sorted(tidy['Year'].unique())
+    year_domain = [str(year) for year in sorted_years]
+    year_range = [
+        'black' if year == focus_year else TABLEAU_COLORS[i % len(TABLEAU_COLORS)]
+        for i, year in enumerate(sorted_years)
+    ]
     base = alt.Chart(tidy).encode(
         x=alt.X(
             'MonthLabel:N',
@@ -385,13 +412,14 @@ def create_altair_chart(
             ),
         ),
         tooltip=[
-            alt.Tooltip('Year:N'),
+            alt.Tooltip('YearLabel:N', title='Year'),
             alt.Tooltip('MonthLabel:N', title='Month'),
             alt.Tooltip('Fatal Persons:Q', title='Fatalities', format=','),
         ],
     )
 
     line = base.mark_line().encode(
+        detail=alt.Detail('YearLabel:N'),
         strokeDash=alt.StrokeDash(
             'LineDash:N',
             scale=alt.Scale(domain=['solid', 'dashed'], range=[[1, 0], [4, 4]]),
@@ -400,9 +428,16 @@ def create_altair_chart(
         size=alt.Size('LineSize:Q', legend=None),
         opacity=alt.Opacity('LineOpacity:Q', legend=None),
         color=alt.Color(
-            'LineColor:N',
-            scale=None,
-            legend=None,
+            'YearLabel:N',
+            scale=alt.Scale(domain=year_domain, range=year_range),
+            legend=alt.Legend(
+                title='Year',
+                labelColor='#000',
+                titleColor='#000',
+                symbolType='stroke',
+                symbolStrokeWidth=3,
+                columns=2,
+            ),
         ),
     )
 
@@ -412,9 +447,10 @@ def create_altair_chart(
         stroke='white',
         strokeWidth=0.8,
     ).encode(
+        detail=alt.Detail('YearLabel:N'),
         opacity=alt.Opacity('PointOpacity:Q', legend=None),
         shape=alt.Shape('Marker Shape:N', legend=None),
-        color=alt.Color('LineColor:N', scale=None, legend=None),
+        color=alt.Color('YearLabel:N', scale=alt.Scale(domain=year_domain, range=year_range), legend=None),
     )
 
     layers = [line, points]
@@ -507,25 +543,6 @@ def create_altair_chart(
             )
             layers.append(history_labels)
 
-    legend_df = pd.DataFrame({'LegendYear': [str(focus_year)], 'MonthLabel': [MONTH_LABELS[0]], 'Fatal Persons': [0]})
-    legend_layer = alt.Chart(legend_df).mark_point(opacity=0, size=0).encode(
-        x=alt.X('MonthLabel:N', sort=MONTH_LABELS),
-        y='Fatal Persons:Q',
-        color=alt.Color(
-            'LegendYear:N',
-            scale=alt.Scale(domain=[str(focus_year)], range=['black']),
-            legend=alt.Legend(
-                title='Year',
-                labelColor='#000',
-                titleColor='#000',
-                symbolType='stroke',
-                symbolStrokeWidth=3,
-                symbolSize=200,
-            ),
-        ),
-    )
-    layers.append(legend_layer)
-
     chart = alt.layer(*layers).resolve_scale(color='independent').properties(
         width=min(CHART_WIDTH, 850),
         height=min(CHART_HEIGHT, 520),
@@ -591,9 +608,10 @@ def main():
     years = sorted(processed['Year'].unique())
     min_year, max_year = years[0], years[-1]
     default_start = 2015 if min_year <= 2015 <= max_year else min_year
-    latest_year = get_latest_comparison_year(processed)
-    cutoff_month = get_ytd_cutoff_month(processed, latest_year)
-    cutoff_label = MONTH_LABELS[cutoff_month - 1]
+    report_year = get_latest_comparison_year(processed)
+    report_cutoff_month = get_ytd_cutoff_month(processed, report_year)
+    report_cutoff_label = MONTH_LABELS[report_cutoff_month - 1]
+    default_end = report_year if report_year in years else max_year
 
     with st.sidebar:
         st.caption(f"Source: `{Path(data_source).name}`")
@@ -602,7 +620,7 @@ def main():
             "Year range",
             min_year,
             max_year,
-            (default_start, max_year),
+            (default_start, default_end),
         )
         show_history_trend = st.checkbox("Show historical trend line", value=True, key="history_trend")
 
@@ -611,7 +629,7 @@ def main():
         focus_year = st.selectbox(
             "Focus year (highlighted)",
             focus_options,
-            index=0,
+            index=focus_options.index(report_year) if report_year in focus_options else 0,
         )
         show_focus_trend = st.checkbox("Show focus-year trend line", value=True, key="focus_trend")
 
@@ -627,19 +645,21 @@ def main():
     slider_years = [year for year in years if start_year <= year <= end_year]
     display_years = sorted(set(slider_years + [focus_year]))
     pivot_span_start, pivot_span_end = display_years[0], display_years[-1]
+    chart_cutoff_month = get_ytd_cutoff_month(processed, focus_year)
+    chart_cutoff_label = MONTH_LABELS[chart_cutoff_month - 1]
 
-    pivot_full = build_cumulative_table(processed, pivot_span_start, pivot_span_end, cutoff_month=cutoff_month)
+    pivot_full = build_cumulative_table(processed, pivot_span_start, pivot_span_end, cutoff_month=chart_cutoff_month)
     if pivot_full.empty:
         st.warning("Not enough data to build the visualization. Try adjusting the selected years.")
         st.stop()
     pivot_complete = pivot_full.loc[:, [col for col in display_years if col in pivot_full.columns]]
-    full_history_pivot = build_cumulative_table(processed, years[0], years[-1], cutoff_month=cutoff_month)
+    full_history_pivot = build_cumulative_table(processed, years[0], years[-1], cutoff_month=report_cutoff_month)
     if full_history_pivot.empty:
         full_history_pivot = pivot_complete.copy()
 
     displayed_text = ", ".join(str(year) for year in pivot_complete.columns)
     st.markdown(
-        f"Showing {len(pivot_complete.columns)} year(s): **{displayed_text}** through **{cutoff_label} {latest_year}** "
+        f"Showing {len(pivot_complete.columns)} year(s): **{displayed_text}** through **{chart_cutoff_label} {focus_year}** "
         f"(slider {start_year}–{end_year}, focus {focus_year})."
     )
 
@@ -677,13 +697,13 @@ def main():
     year_totals_ytd = get_ytd_totals(full_pivot)
 
     if not year_totals_ytd.empty:
-        focus_total = int(year_totals_ytd.get(latest_year, 0))
+        focus_total = int(year_totals_ytd.get(report_year, 0))
         best_year = int(year_totals_ytd.idxmax())
         best_value = int(year_totals_ytd.max())
         worst_year = int(year_totals_ytd.idxmin())
         worst_value = int(year_totals_ytd.min())
 
-        prev_total = year_totals_ytd.get(latest_year - 1)
+        prev_total = year_totals_ytd.get(report_year - 1)
         pct_change_prior = (
             ((focus_total - prev_total) / prev_total) * 100
             if prev_total and prev_total > 0
@@ -698,18 +718,18 @@ def main():
         )
 
         st.markdown("---")
-        st.subheader(f"Quick stats through {cutoff_label} (all years)")
+        st.subheader(f"Quick stats through {report_cutoff_label} (all years)")
         col_focus, col_best, col_prior, col_all = st.columns(4)
-        col_focus.metric(f"YTD fatalities ({latest_year})", f"{focus_total:,}")
+        col_focus.metric(f"YTD fatalities ({report_year})", f"{focus_total:,}")
         col_best.metric(
-            f"Best/Worst through {cutoff_label}",
+            f"Best/Worst through {report_cutoff_label}",
             f"{best_year}: {best_value:,}",
             f"Worst {worst_year}: {worst_value:,}",
         )
         col_prior.metric(
             "Focus vs prior year",
             f"{focus_total:,}",
-            f"{pct_change_prior:+.1f}% vs {latest_year - 1}" if pct_change_prior is not None else "N/A",
+            f"{pct_change_prior:+.1f}% vs {report_year - 1}" if pct_change_prior is not None else "N/A",
         )
         col_all.metric(
             "Focus vs all-years avg",
@@ -736,18 +756,18 @@ def main():
         index_df['Observed'] / index_df['Expected'],
         0,
     )
-    index_chart = create_index_chart(index_df, title_text=f"Focus month index ({latest_year} vs 5-year avg through {cutoff_label})")
+    index_chart = create_index_chart(index_df, title_text=f"Focus month index ({report_year} vs 5-year avg through {report_cutoff_label})")
     st.altair_chart(index_chart, use_container_width=False)
 
     # Year ranking as bar chart (all years, same YTD cutoff)
-    focus_for_ranking = latest_year if not year_totals_ytd.empty else focus_year
-    ranking_chart = create_ranking_bar_chart(year_totals_ytd, focus_for_ranking, title_text=f"Year ranking through {cutoff_label} (focus {latest_year})")
+    focus_for_ranking = report_year if not year_totals_ytd.empty else focus_year
+    ranking_chart = create_ranking_bar_chart(year_totals_ytd, focus_for_ranking, title_text=f"Year ranking through {report_cutoff_label} (focus {report_year})")
     st.altair_chart(ranking_chart, use_container_width=False)
 
     # Average monthly bar chart (all years, same YTD cutoff)
     avg_df = compute_monthly_average_from_pivot(full_pivot)
     if not avg_df.empty:
-        avg_chart = create_average_bar_chart(avg_df, f"Average monthly fatalities through {cutoff_label} across all years")
+        avg_chart = create_average_bar_chart(avg_df, f"Average monthly fatalities through {report_cutoff_label} across all years")
         st.altair_chart(avg_chart, use_container_width=False)
 
     # 12-month rolling fatalities (post-2008, all years)
@@ -760,7 +780,7 @@ def main():
     )
     monthly_totals['Date'] = pd.to_datetime(dict(year=monthly_totals['Year'], month=monthly_totals['Month'], day=1))
     monthly_totals['Rolling12'] = monthly_totals['Fatal Persons'].rolling(window=12).sum()
-    rolling_chart = create_rolling_chart(monthly_totals[['Date', 'Rolling12']].dropna(), title_text=f"12-month rolling fatalities (current year {latest_year})")
+    rolling_chart = create_rolling_chart(monthly_totals[['Date', 'Rolling12']].dropna(), title_text=f"12-month rolling fatalities (current year {report_year})")
     st.altair_chart(rolling_chart, use_container_width=False)
 
     with st.expander("Show cumulative table"):
