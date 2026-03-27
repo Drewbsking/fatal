@@ -185,17 +185,16 @@ def compute_monthly_average_from_pivot(pivot_complete: pd.DataFrame) -> pd.DataF
 def create_average_bar_chart(avg_df: pd.DataFrame, subtitle: str) -> alt.Chart:
     """Build a bar chart showing average fatalities per month."""
     if avg_df.empty:
-        return alt.Chart(pd.DataFrame({'Month': [], 'Average Fatalities': []}))
+        return alt.Chart(pd.DataFrame({'MonthLabel': [], 'Average Fatalities': []}))
     chart = (
         alt.Chart(avg_df)
         .mark_bar(color='#d04b4b', opacity=0.85)
         .encode(
             x=alt.X(
-                'Month:O',
-                sort=list(range(1, 13)),
+                'MonthLabel:N',
+                sort=MONTH_LABELS,
                 title='Month',
                 axis=alt.Axis(
-                    labelExpr="['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][datum.value - 1]",
                     labelColor='#000',
                     tickColor='#000',
                     titleColor='#000',
@@ -264,14 +263,14 @@ def create_ranking_bar_chart(year_totals: pd.Series, focus_year: int, title_text
 def create_index_chart(index_df: pd.DataFrame, title_text: str | None = None) -> alt.Chart:
     """Bar chart showing observed vs expected index for the focus year."""
     if index_df.empty:
-        return alt.Chart(pd.DataFrame({'Month': [], 'IndexValue': []}))
+        return alt.Chart(pd.DataFrame({'MonthLabel': [], 'IndexValue': []}))
     bars = (
         alt.Chart(index_df)
         .mark_bar()
         .encode(
             x=alt.X(
-                'Month:O',
-                sort=list(range(1, 13)),
+                'MonthLabel:N',
+                sort=MONTH_LABELS,
                 title='Month',
                 axis=alt.Axis(labelColor='#000', tickColor='#000', domainColor='#000', titleColor='#000'),
             ),
@@ -361,16 +360,15 @@ def create_altair_chart(
     )
     base = alt.Chart(tidy).encode(
         x=alt.X(
-            'Month:Q',
+            'MonthLabel:N',
             title='Month',
-            scale=alt.Scale(domain=[1, 12]),
             axis=alt.Axis(
-                values=list(range(1, 13)),
-                labelExpr="['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][datum.value - 1]",
+                values=MONTH_LABELS,
                 labelColor='#000',
                 tickColor='#000',
                 titleColor='#000',
             ),
+            sort=MONTH_LABELS,
         ),
         y=alt.Y(
             'Fatal Persons:Q',
@@ -440,12 +438,13 @@ def create_altair_chart(
                 trend_y = slope * np.array(x_plot) + intercept
                 trend_y = np.clip(trend_y, 0, None)
                 focus_df = pd.DataFrame({'Month': x_plot, 'Fatal Persons': trend_y})
+                focus_df['MonthLabel'] = focus_df['Month'].round().astype(int).apply(lambda idx: MONTH_LABELS[idx - 1])
                 focus_layer = alt.Chart(focus_df).mark_line(
                     strokeDash=[6, 3],
                     color='black',
                     size=2,
                 ).encode(
-                    x=alt.X('Month:Q', title=None),
+                    x=alt.X('MonthLabel:N', title=None, sort=MONTH_LABELS),
                     y='Fatal Persons:Q',
                 )
                 layers.append(focus_layer)
@@ -472,13 +471,15 @@ def create_altair_chart(
             y_line = slope * x_line + intercept
             y_line = np.clip(y_line, 0, None)
             hist_df = pd.DataFrame({'Month': x_line, 'Fatal Persons': y_line})
+            hist_df['MonthLabel'] = hist_df['Month'].round().astype(int).clip(1, 12).apply(lambda idx: MONTH_LABELS[idx - 1])
+            hist_df = hist_df.drop_duplicates(subset=['MonthLabel'], keep='first')
             hist_layer = alt.Chart(hist_df).mark_line(
                 strokeDash=[6, 3],
                 color='#555555',
                 opacity=0.95,
                 size=2,
             ).encode(
-                x=alt.X('Month:Q', title=None),
+                x=alt.X('MonthLabel:N', title=None, sort=MONTH_LABELS),
                 y='Fatal Persons:Q',
             )
             layers.append(hist_layer)
@@ -486,14 +487,13 @@ def create_altair_chart(
     if show_focus_labels:
         focus_label_data = tidy[tidy['Year'] == focus_year].copy()
         if not focus_label_data.empty:
-            focus_label_data['MonthQ'] = focus_label_data['Month'].astype(float)
             focus_labels = alt.Chart(focus_label_data).mark_text(
                 dy=-12,
                 fontWeight='bold',
                 fontSize=11,
                 color='black',
             ).encode(
-                x='MonthQ:Q',
+                x=alt.X('MonthLabel:N', sort=MONTH_LABELS),
                 y='Fatal Persons:Q',
                 text=alt.Text('Fatal Persons:Q', format=','),
             )
@@ -502,21 +502,20 @@ def create_altair_chart(
     if show_history_labels:
         history_label_data = tidy[tidy['Year'] != focus_year].copy()
         if not history_label_data.empty:
-            history_label_data['MonthQ'] = history_label_data['Month'].astype(float)
             history_labels = alt.Chart(history_label_data).mark_text(
                 dy=-10,
                 fontSize=10,
                 color='#444',
             ).encode(
-                x='MonthQ:Q',
+                x=alt.X('MonthLabel:N', sort=MONTH_LABELS),
                 y='Fatal Persons:Q',
                 text=alt.Text('Fatal Persons:Q', format=','),
             )
             layers.append(history_labels)
 
-    legend_df = pd.DataFrame({'LegendYear': [str(focus_year)], 'Month': [0], 'Fatal Persons': [0]})
+    legend_df = pd.DataFrame({'LegendYear': [str(focus_year)], 'MonthLabel': [MONTH_LABELS[0]], 'Fatal Persons': [0]})
     legend_layer = alt.Chart(legend_df).mark_point(opacity=0, size=0).encode(
-        x='Month:Q',
+        x=alt.X('MonthLabel:N', sort=MONTH_LABELS),
         y='Fatal Persons:Q',
         color=alt.Color(
             'LegendYear:N',
