@@ -231,20 +231,17 @@ def create_ranking_bar_chart(year_totals: pd.Series, focus_year: int, title_text
     df.columns = ['Year', 'Fatalities']
     df['Year'] = df['Year'].astype(int)
     df['Focus'] = df['Year'] == focus_year
+    df['BarColor'] = np.where(df['Focus'], 'black', '#4c78a8')
     chart = (
         alt.Chart(df)
         .mark_bar()
         .encode(
             y=alt.Y('Year:N', sort=df['Year'].tolist(), title='Year'),
             x=alt.X('Fatalities:Q', title='Total fatalities'),
-            color=alt.condition(
-                alt.datum.Focus,
-                alt.value('black'),
-                alt.Color(
-                    'Year:N',
-                    legend=alt.Legend(title='Year', columns=2, labelColor='#000', titleColor='#000'),
-                    scale=alt.Scale(scheme='tableau10'),
-                ),
+            color=alt.Color(
+                'BarColor:N',
+                scale=None,
+                legend=None,
             ),
             tooltip=['Year', 'Fatalities'],
         )
@@ -264,8 +261,10 @@ def create_index_chart(index_df: pd.DataFrame, title_text: str | None = None) ->
     """Bar chart showing observed vs expected index for the focus year."""
     if index_df.empty:
         return alt.Chart(pd.DataFrame({'MonthLabel': [], 'IndexValue': []}))
+    plot_df = index_df.copy()
+    plot_df['BarColor'] = np.where(plot_df['IndexValue'] >= 1, '#d04b4b', '#3c7dcf')
     bars = (
-        alt.Chart(index_df)
+        alt.Chart(plot_df)
         .mark_bar()
         .encode(
             x=alt.X(
@@ -279,7 +278,7 @@ def create_index_chart(index_df: pd.DataFrame, title_text: str | None = None) ->
                 title='Index (observed / 5-year avg)',
                 axis=alt.Axis(labelColor='#000', tickColor='#000', domainColor='#000', titleColor='#000'),
             ),
-            color=alt.condition(alt.datum.IndexValue >= 1, alt.value('#d04b4b'), alt.value('#3c7dcf')),
+            color=alt.Color('BarColor:N', scale=None, legend=None),
             tooltip=[
                 alt.Tooltip('MonthLabel:N', title='Month'),
                 alt.Tooltip('Observed:Q', title='Observed', format=','),
@@ -358,6 +357,12 @@ def create_altair_chart(
     tidy['Marker Shape'] = tidy['Year'].map(
         {year: MARKER_SHAPES[i % len(MARKER_SHAPES)] for i, year in enumerate(sorted(tidy['Year'].unique()))}
     )
+    tidy['IsFocus'] = tidy['Year'] == focus_year
+    tidy['LineDash'] = tidy['IsFocus'].map({True: 'solid', False: 'dashed'})
+    tidy['LineSize'] = tidy['IsFocus'].map({True: 3.0, False: 1.5})
+    tidy['LineOpacity'] = tidy['IsFocus'].map({True: 1.0, False: 0.5})
+    tidy['PointOpacity'] = tidy['IsFocus'].map({True: 1.0, False: 0.8})
+    tidy['LineColor'] = np.where(tidy['IsFocus'], 'black', '#4c78a8')
     base = alt.Chart(tidy).encode(
         x=alt.X(
             'MonthLabel:N',
@@ -387,24 +392,17 @@ def create_altair_chart(
     )
 
     line = base.mark_line().encode(
-        strokeDash=alt.condition(alt.datum.Year == focus_year, alt.value([1, 0]), alt.value([4, 4])),
-        size=alt.condition(alt.datum.Year == focus_year, alt.value(3), alt.value(1.5)),
-        opacity=alt.condition(alt.datum.Year == focus_year, alt.value(1), alt.value(0.5)),
-        color=alt.condition(
-            alt.datum.Year == focus_year,
-            alt.value('black'),
-            alt.Color(
-                'Year:N',
-                legend=alt.Legend(
-                    title='Year',
-                    labelColor='#000',
-                    titleColor='#000',
-                    symbolType='stroke',
-                    symbolStrokeWidth=3,
-                    columns=2,
-                ),
-                scale=alt.Scale(scheme='tableau10'),
-            ),
+        strokeDash=alt.StrokeDash(
+            'LineDash:N',
+            scale=alt.Scale(domain=['solid', 'dashed'], range=[[1, 0], [4, 4]]),
+            legend=None,
+        ),
+        size=alt.Size('LineSize:Q', legend=None),
+        opacity=alt.Opacity('LineOpacity:Q', legend=None),
+        color=alt.Color(
+            'LineColor:N',
+            scale=None,
+            legend=None,
         ),
     )
 
@@ -414,13 +412,9 @@ def create_altair_chart(
         stroke='white',
         strokeWidth=0.8,
     ).encode(
-        opacity=alt.condition(alt.datum.Year == focus_year, alt.value(1), alt.value(0.8)),
+        opacity=alt.Opacity('PointOpacity:Q', legend=None),
         shape=alt.Shape('Marker Shape:N', legend=None),
-        color=alt.condition(
-            alt.datum.Year == focus_year,
-            alt.value('black'),
-            alt.Color('Year:N', legend=None, scale=alt.Scale(scheme='tableau10')),
-        ),
+        color=alt.Color('LineColor:N', scale=None, legend=None),
     )
 
     layers = [line, points]
