@@ -107,6 +107,7 @@ def load_dataframe(file_bytes: bytes | None, filename: str | None) -> tuple[pd.D
     return df, str(path)
 
 
+@st.cache_data(show_spinner=False)
 def preprocess_crash_data(df: pd.DataFrame) -> pd.DataFrame:
     """Clean raw crash data and add Year/Month columns."""
     working = df.copy()
@@ -142,6 +143,7 @@ def format_latest_data_date(data: pd.DataFrame) -> str:
     return f"{timestamp:%b} {timestamp.day}, {timestamp.year}"
 
 
+@st.cache_data(show_spinner=False)
 def build_cumulative_table(
     data: pd.DataFrame,
     start_year: int,
@@ -639,6 +641,26 @@ def chart_to_png_bytes(chart: alt.Chart) -> bytes:
     return chart_spec_to_png_bytes(spec_json)
 
 
+@st.cache_data(show_spinner=False)
+def compute_annual_totals(data: pd.DataFrame) -> pd.Series:
+    """Return annual fatality totals."""
+    return data.groupby('Year')['Fatal Persons'].sum().sort_index()
+
+
+@st.cache_data(show_spinner=False)
+def compute_monthly_totals_with_rolling(data: pd.DataFrame) -> pd.DataFrame:
+    """Return monthly fatality totals with a 12-month rolling total."""
+    monthly_totals = (
+        data.groupby(['Year', 'Month'])['Fatal Persons']
+        .sum()
+        .reset_index()
+        .sort_values(['Year', 'Month'])
+    )
+    monthly_totals['Date'] = pd.to_datetime(dict(year=monthly_totals['Year'], month=monthly_totals['Month'], day=1))
+    monthly_totals['Rolling12'] = monthly_totals['Fatal Persons'].rolling(window=12).sum()
+    return monthly_totals
+
+
 def render_year_over_year(processed: pd.DataFrame, data_source: str) -> None:
     """Render complete-year comparisons, excluding the partial current year."""
     current_year = pd.Timestamp.today().year
@@ -677,6 +699,11 @@ def render_year_over_year(processed: pd.DataFrame, data_source: str) -> None:
             value=True,
             key="yoy_focus_trend",
         )
+        show_yoy_supporting_charts = st.checkbox(
+            "Show supporting charts",
+            value=False,
+            key="yoy_supporting_charts",
+        )
 
         st.header("Labels")
         label_mode = st.selectbox(
@@ -698,7 +725,7 @@ def render_year_over_year(processed: pd.DataFrame, data_source: str) -> None:
         f"Focus year: **{focus_year}**."
     )
 
-    annual_totals = complete_data.groupby('Year')['Fatal Persons'].sum().sort_index()
+    annual_totals = compute_annual_totals(complete_data)
     latest_total = int(annual_totals.loc[latest_complete_year])
     best_year = int(annual_totals.idxmin())
     best_value = int(annual_totals.min())
@@ -756,34 +783,28 @@ def render_year_over_year(processed: pd.DataFrame, data_source: str) -> None:
             ),
         )
 
-    st.altair_chart(
-        create_annual_totals_chart(annual_totals, f"Annual fatalities by complete year ({start_year}–{end_year})"),
-        use_container_width=False,
-    )
-    st.altair_chart(
-        create_ranking_bar_chart(annual_totals, latest_complete_year, f"Complete-year ranking ({start_year}–{end_year})"),
-        use_container_width=False,
-    )
-
-    avg_df = compute_monthly_average_from_pivot(complete_pivot)
-    if not avg_df.empty:
+    if show_yoy_supporting_charts:
         st.altair_chart(
-            create_average_bar_chart(avg_df, f"Average monthly fatalities across complete years ({start_year}–{end_year})"),
+            create_annual_totals_chart(annual_totals, f"Annual fatalities by complete year ({start_year}–{end_year})"),
+            use_container_width=False,
+        )
+        st.altair_chart(
+            create_ranking_bar_chart(annual_totals, latest_complete_year, f"Complete-year ranking ({start_year}–{end_year})"),
             use_container_width=False,
         )
 
-    monthly_totals = (
-        complete_data.groupby(['Year', 'Month'])['Fatal Persons']
-        .sum()
-        .reset_index()
-        .sort_values(['Year', 'Month'])
-    )
-    monthly_totals['Date'] = pd.to_datetime(dict(year=monthly_totals['Year'], month=monthly_totals['Month'], day=1))
-    monthly_totals['Rolling12'] = monthly_totals['Fatal Persons'].rolling(window=12).sum()
-    st.altair_chart(
-        create_rolling_chart(monthly_totals[['Date', 'Rolling12']].dropna(), f"12-month rolling fatalities through {latest_complete_year}"),
-        use_container_width=False,
-    )
+        avg_df = compute_monthly_average_from_pivot(complete_pivot)
+        if not avg_df.empty:
+            st.altair_chart(
+                create_average_bar_chart(avg_df, f"Average monthly fatalities across complete years ({start_year}–{end_year})"),
+                use_container_width=False,
+            )
+
+        monthly_totals = compute_monthly_totals_with_rolling(complete_data)
+        st.altair_chart(
+            create_rolling_chart(monthly_totals[['Date', 'Rolling12']].dropna(), f"12-month rolling fatalities through {latest_complete_year}"),
+            use_container_width=False,
+        )
 
     with st.expander("Show complete-year totals"):
         st.dataframe(
@@ -796,17 +817,8 @@ def main():
     st.title("Year-to-Date Traffic Fatalities")
     st.caption("Visualize cumulative traffic-related fatalities by month and compare year-over-year trends.")
 
-    with st.sidebar:
-        uploaded_file = st.file_uploader(
-            "Optional data file",
-            type=['csv', 'xls', 'xlsx'],
-            help="If omitted, the app loads Fatals.csv from the repo.",
-        )
-
     try:
-        uploaded_bytes = uploaded_file.getvalue() if uploaded_file is not None else None
-        uploaded_name = uploaded_file.name if uploaded_file is not None else None
-        df_raw, data_source = load_dataframe(uploaded_bytes, uploaded_name)
+        df_raw, data_source = load_dataframe(None, None)
     except (FileNotFoundError, ValueError) as exc:
         st.error(str(exc))
         st.stop()
@@ -868,6 +880,11 @@ def main():
         )
         show_focus_labels = label_mode in {"Current year", "All"}
         show_history_labels = label_mode in {"Historical years", "All"}
+        show_ytd_supporting_charts = st.checkbox(
+            "Show supporting charts",
+            value=False,
+            key="ytd_supporting_charts",
+        )
 
     slider_years = [year for year in years if start_year <= year <= end_year]
     display_years = sorted(set(slider_years + [focus_year]))
@@ -979,50 +996,44 @@ def main():
             f"{pct_vs_all:+.1f}% vs all-years avg" if pct_vs_all is not None else "N/A",
         )
 
-    # Index chart using full YTD history (5-year avg baseline before the current year)
-    safe_pivot = full_pivot
-    focus_year_index = max(safe_pivot.columns.astype(int)) if not safe_pivot.empty else None
-    monthly_inc_all = safe_pivot.diff().fillna(safe_pivot)
-    prev_years = [y for y in monthly_inc_all.columns if int(y) < int(focus_year_index)] if focus_year_index else []
-    prev_years = sorted(prev_years)[-5:]
-    focus_monthly = monthly_inc_all[focus_year_index] if focus_year_index in monthly_inc_all.columns else pd.Series(dtype=float)
-    baseline_monthly = monthly_inc_all[prev_years].mean(axis=1) if prev_years else pd.Series(0, index=monthly_inc_all.index)
-    index_df = pd.DataFrame({
-        'Month': monthly_inc_all.index,
-        'Observed': focus_monthly.reindex(monthly_inc_all.index).fillna(0),
-        'Expected': baseline_monthly.fillna(0),
-    })
-    index_df['MonthLabel'] = index_df['Month'].apply(lambda m: MONTH_LABELS[int(m) - 1])
-    index_df['IndexValue'] = np.where(
-        index_df['Expected'] > 0,
-        index_df['Observed'] / index_df['Expected'],
-        0,
-    )
-    index_chart = create_index_chart(index_df, title_text=f"Current month index ({report_year} vs 5-year avg through {report_cutoff_label})")
-    st.altair_chart(index_chart, use_container_width=False)
+    if show_ytd_supporting_charts:
+        # Index chart using full YTD history (5-year avg baseline before the current year)
+        safe_pivot = full_pivot
+        focus_year_index = max(safe_pivot.columns.astype(int)) if not safe_pivot.empty else None
+        monthly_inc_all = safe_pivot.diff().fillna(safe_pivot)
+        prev_years = [y for y in monthly_inc_all.columns if int(y) < int(focus_year_index)] if focus_year_index else []
+        prev_years = sorted(prev_years)[-5:]
+        focus_monthly = monthly_inc_all[focus_year_index] if focus_year_index in monthly_inc_all.columns else pd.Series(dtype=float)
+        baseline_monthly = monthly_inc_all[prev_years].mean(axis=1) if prev_years else pd.Series(0, index=monthly_inc_all.index)
+        index_df = pd.DataFrame({
+            'Month': monthly_inc_all.index,
+            'Observed': focus_monthly.reindex(monthly_inc_all.index).fillna(0),
+            'Expected': baseline_monthly.fillna(0),
+        })
+        index_df['MonthLabel'] = index_df['Month'].apply(lambda m: MONTH_LABELS[int(m) - 1])
+        index_df['IndexValue'] = np.where(
+            index_df['Expected'] > 0,
+            index_df['Observed'] / index_df['Expected'],
+            0,
+        )
+        index_chart = create_index_chart(index_df, title_text=f"Current month index ({report_year} vs 5-year avg through {report_cutoff_label})")
+        st.altair_chart(index_chart, use_container_width=False)
 
-    # Year ranking as bar chart (all years, same YTD cutoff)
-    focus_for_ranking = report_year if not year_totals_ytd.empty else focus_year
-    ranking_chart = create_ranking_bar_chart(year_totals_ytd, focus_for_ranking, title_text=f"Year ranking through {report_cutoff_label} (current year {report_year})")
-    st.altair_chart(ranking_chart, use_container_width=False)
+        # Year ranking as bar chart (all years, same YTD cutoff)
+        focus_for_ranking = report_year if not year_totals_ytd.empty else focus_year
+        ranking_chart = create_ranking_bar_chart(year_totals_ytd, focus_for_ranking, title_text=f"Year ranking through {report_cutoff_label} (current year {report_year})")
+        st.altair_chart(ranking_chart, use_container_width=False)
 
-    # Average monthly bar chart (all years, same YTD cutoff)
-    avg_df = compute_monthly_average_from_pivot(full_pivot)
-    if not avg_df.empty:
-        avg_chart = create_average_bar_chart(avg_df, f"Average monthly fatalities through {report_cutoff_label} across all years")
-        st.altair_chart(avg_chart, use_container_width=False)
+        # Average monthly bar chart (all years, same YTD cutoff)
+        avg_df = compute_monthly_average_from_pivot(full_pivot)
+        if not avg_df.empty:
+            avg_chart = create_average_bar_chart(avg_df, f"Average monthly fatalities through {report_cutoff_label} across all years")
+            st.altair_chart(avg_chart, use_container_width=False)
 
-    # 12-month rolling fatalities
-    monthly_totals = (
-        processed.groupby(['Year', 'Month'])['Fatal Persons']
-        .sum()
-        .reset_index()
-        .sort_values(['Year', 'Month'])
-    )
-    monthly_totals['Date'] = pd.to_datetime(dict(year=monthly_totals['Year'], month=monthly_totals['Month'], day=1))
-    monthly_totals['Rolling12'] = monthly_totals['Fatal Persons'].rolling(window=12).sum()
-    rolling_chart = create_rolling_chart(monthly_totals[['Date', 'Rolling12']].dropna(), title_text=f"12-month rolling fatalities (current year {report_year})")
-    st.altair_chart(rolling_chart, use_container_width=False)
+        # 12-month rolling fatalities
+        monthly_totals = compute_monthly_totals_with_rolling(processed)
+        rolling_chart = create_rolling_chart(monthly_totals[['Date', 'Rolling12']].dropna(), title_text=f"12-month rolling fatalities (current year {report_year})")
+        st.altair_chart(rolling_chart, use_container_width=False)
 
     with st.expander("Show cumulative table"):
         formatted = pivot_complete.round(0).fillna(0).astype(int)
