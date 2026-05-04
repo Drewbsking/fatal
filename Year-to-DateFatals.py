@@ -406,6 +406,7 @@ def create_altair_chart(
     show_focus_labels: bool,
     show_history_labels: bool,
     title_text: str,
+    focus_trend_label: str = 'Current-year trend',
 ) -> alt.Chart:
     """Build the interactive Altair line chart and optional trend layers."""
     tidy = (
@@ -506,12 +507,12 @@ def create_altair_chart(
             if len(np.unique(x_vals)) >= 2:
                 slope, intercept = np.polyfit(x_vals, y_vals, 1)
                 intercept = -slope  # ensure line passes through (Jan, 0)
-                x_plot = sorted(set([1] + focus_months))
+                x_plot = list(range(min(focus_months), max(focus_months) + 1))
                 trend_y = slope * np.array(x_plot) + intercept
                 trend_y = np.clip(trend_y, 0, None)
                 focus_df = pd.DataFrame({'Month': x_plot, 'Fatal Persons': trend_y})
                 focus_df['MonthLabel'] = focus_df['Month'].round().astype(int).apply(lambda idx: MONTH_LABELS[idx - 1])
-                focus_df['Trend line'] = 'Current-year trend'
+                focus_df['Trend line'] = focus_trend_label
                 trend_frames.append(focus_df)
 
     history_columns = [col for col in history_pivot.columns if int(col) != focus_year]
@@ -531,21 +532,21 @@ def create_altair_chart(
             hist_y = np.array(hist_values)
             slope, intercept = np.polyfit(hist_x, hist_y, 1)
             intercept = -slope
-            max_month = max(hist_x.max(), 12)
-            x_line = np.linspace(1, max_month, 100)
+            max_month = int(hist_x.max())
+            x_line = np.arange(1, max_month + 1)
             y_line = slope * x_line + intercept
             y_line = np.clip(y_line, 0, None)
             hist_df = pd.DataFrame({'Month': x_line, 'Fatal Persons': y_line})
-            hist_df['MonthLabel'] = hist_df['Month'].round().astype(int).clip(1, 12).apply(lambda idx: MONTH_LABELS[idx - 1])
-            hist_df = hist_df.drop_duplicates(subset=['MonthLabel'], keep='first')
+            hist_df['MonthLabel'] = hist_df['Month'].astype(int).apply(lambda idx: MONTH_LABELS[idx - 1])
             hist_df['Trend line'] = 'Historical trend'
             trend_frames.append(hist_df)
 
     if trend_frames:
         trend_df = pd.concat(trend_frames, ignore_index=True)
-        trend_domain = [label for label in ['Current-year trend', 'Historical trend'] if label in trend_df['Trend line'].unique()]
+        trend_domain = [label for label in ['Current-year trend', 'Focus-year trend', 'Historical trend'] if label in trend_df['Trend line'].unique()]
         trend_color_map = {
             'Current-year trend': 'black',
+            'Focus-year trend': 'black',
             'Historical trend': '#555555',
         }
         trend_layer = alt.Chart(trend_df).mark_line(
@@ -772,6 +773,7 @@ def render_year_over_year(processed: pd.DataFrame, data_source: str) -> None:
             show_focus_labels,
             show_history_labels,
             title_text=f"Year-over-year cumulative fatalities ({start_year}–{end_year}) — Focus {focus_year}",
+            focus_trend_label='Focus-year trend',
         )
         st.altair_chart(
             line_chart,
