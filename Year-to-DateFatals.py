@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 from pathlib import Path
 
 import altair as alt
@@ -9,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 st.set_page_config(
-    page_title="Year-to-Date Traffic Fatalities",
+    page_title="Traffic Fatalities Dashboard",
     layout="wide",
     page_icon="📈",
 )
@@ -63,18 +62,16 @@ def resolve_default_dataset() -> Path:
         if matches:
             return matches[0]
 
-    raise FileNotFoundError("No spreadsheet or CSV file found. Upload a file to continue.")
+    raise FileNotFoundError("No Fatals CSV or spreadsheet file was found.")
 
 
-def read_csv_with_fallback(source, *, is_buffer: bool) -> pd.DataFrame:
+def read_csv_with_fallback(path: str) -> pd.DataFrame:
     """Read CSV content while trying multiple encodings."""
     encodings = ['utf-8', 'utf-8-sig', 'utf-16', 'latin1', 'cp1252']
     last_error: Exception | None = None
     for encoding in encodings:
         try:
-            if is_buffer:
-                source.seek(0)
-            return pd.read_csv(source, encoding=encoding)
+            return pd.read_csv(path, encoding=encoding)
         except (UnicodeDecodeError, UnicodeError, ValueError) as exc:
             last_error = exc
             continue
@@ -83,26 +80,25 @@ def read_csv_with_fallback(source, *, is_buffer: bool) -> pd.DataFrame:
     raise ValueError("Failed to read CSV file.")
 
 
-@st.cache_data(show_spinner=False)
-def load_dataframe(file_bytes: bytes | None, filename: str | None) -> tuple[pd.DataFrame, str]:
-    """Load crash summary data either from an upload or a default file."""
-    if file_bytes is not None and filename:
-        buffer = io.BytesIO(file_bytes)
-        if filename.lower().endswith((".xlsx", ".xls")):
-            df = pd.read_excel(buffer, sheet_name=DEFAULT_SHEET_NAME)
-        else:
-            df = read_csv_with_fallback(buffer, is_buffer=True)
-        return df, filename
-
+def load_dataframe() -> tuple[pd.DataFrame, str]:
+    """Load crash summary data from the default file."""
     path = resolve_default_dataset()
-    if path.suffix.lower() in (".xlsx", ".xls"):
-        df = pd.read_excel(path, sheet_name=DEFAULT_SHEET_NAME)
-    elif path.suffix.lower() == ".csv":
-        df = read_csv_with_fallback(path, is_buffer=False)
-    else:
-        raise ValueError(f"Unsupported file type: {path.suffix}")
+    return load_dataframe_from_path(str(path), path.stat().st_mtime_ns)
 
-    return df, str(path)
+
+@st.cache_data(show_spinner=False)
+def load_dataframe_from_path(path: str, modified_ns: int) -> tuple[pd.DataFrame, str]:
+    """Read the data file, invalidating the cache when the file changes."""
+    _ = modified_ns
+    suffix = Path(path).suffix.lower()
+    if suffix in (".xlsx", ".xls"):
+        df = pd.read_excel(path, sheet_name=DEFAULT_SHEET_NAME)
+    elif suffix == ".csv":
+        df = read_csv_with_fallback(path)
+    else:
+        raise ValueError(f"Unsupported file type: {suffix}")
+
+    return df, path
 
 
 @st.cache_data(show_spinner=False)
@@ -151,35 +147,29 @@ def build_cumulative_table(
     data: pd.DataFrame,
     start_year: int,
     end_year: int,
-    cutoff_month: int | None = None,
+    cutoff_month: int,
 ) -> pd.DataFrame:
     """Aggregate fatalities by month and compute the cumulative totals."""
     if data.empty:
         return pd.DataFrame()
 
-    subset = data[(data['Year'] >= start_year) & (data['Year'] <= end_year)].copy()
+    subset = data[(data['Year'] >= start_year) & (data['Year'] <= end_year)]
     if subset.empty:
         return pd.DataFrame()
 
+    cutoff_month = max(1, min(12, int(cutoff_month)))
     all_months = pd.DataFrame(
-        [(year, month) for year in range(start_year, end_year + 1) for month in range(1, 13)],
+        [(year, month) for year in range(start_year, end_year + 1) for month in range(1, cutoff_month + 1)],
         columns=['Year', 'Month'],
     )
     monthly = subset.groupby(['Year', 'Month'])['Fatal Persons'].sum().reset_index()
-    last_month_by_year = subset.groupby('Year')['Month'].max()
-
     merged = pd.merge(all_months, monthly, on=['Year', 'Month'], how='left')
-    merged['last_month_observed'] = merged['Year'].map(last_month_by_year).fillna(0).astype(int)
-    merged['max_month_allowed'] = merged['last_month_observed']
-    if cutoff_month is not None:
-        merged['max_month_allowed'] = int(cutoff_month)
-    merged = merged[merged['Month'] <= merged['max_month_allowed']]
-    merged = merged.drop(columns=['last_month_observed', 'max_month_allowed']).fillna(0)
+    merged['Fatal Persons'] = merged['Fatal Persons'].fillna(0)
 
     if merged.empty:
         return pd.DataFrame()
 
-    pivot = merged.pivot(index='Month', columns='Year', values='Fatal Persons').cumsum()
+    pivot = merged.pivot(index='Month', columns='Year', values='Fatal Persons').sort_index().cumsum()
     return pivot
 
 
@@ -194,10 +184,7 @@ def compute_monthly_average_from_pivot(pivot_complete: pd.DataFrame) -> pd.DataF
     """Return average fatalities per month using the non-cumulative increments from the pivot."""
     if pivot_complete.empty:
         return pd.DataFrame()
-    pivot_recent = pivot_complete.loc[:, [c for c in pivot_complete.columns if int(c) > 2008]]
-    if pivot_recent.empty:
-        pivot_recent = pivot_complete
-    monthly_inc = pivot_recent.diff().fillna(pivot_recent)
+    monthly_inc = pivot_complete.diff().fillna(pivot_complete)
     avg = monthly_inc.mean(axis=1).reset_index()
     avg.columns = ['Month', 'Average Fatalities']
     avg['MonthLabel'] = avg['Month'].apply(lambda idx: MONTH_LABELS[int(idx) - 1])
@@ -505,6 +492,7 @@ def create_altair_chart(
         focus_series = pivot_complete[focus_year].dropna()
         focus_months = sorted(int(month) for month in focus_series.index)
         if len(focus_months) >= 2 and len(focus_series) >= 2:
+            focus_df = pd.DataFrame()
             x_vals = np.array(focus_months)
             y_vals = focus_series.loc[x_vals].to_numpy()
             if len(np.unique(x_vals)) >= 2:
@@ -700,8 +688,6 @@ def render_year_over_year(processed: pd.DataFrame, data_source: str) -> None:
 
     complete_data = complete_data[(complete_data['Year'] >= start_year) & (complete_data['Year'] <= end_year)].copy()
     complete_years = sorted(int(year) for year in complete_data['Year'].unique())
-    latest_complete_year = end_year
-
     st.markdown(
         f"Showing complete years **{start_year}–{end_year}**. "
         f"The partial current year ({current_year}) is excluded from this view. "
@@ -709,22 +695,22 @@ def render_year_over_year(processed: pd.DataFrame, data_source: str) -> None:
     )
 
     annual_totals = compute_annual_totals(complete_data)
-    latest_total = int(annual_totals.loc[latest_complete_year])
+    focus_total = int(annual_totals.loc[focus_year])
     best_year = int(annual_totals.idxmin())
     best_value = int(annual_totals.min())
     worst_year = int(annual_totals.idxmax())
     worst_value = int(annual_totals.max())
-    prior_total = annual_totals.get(latest_complete_year - 1)
+    prior_total = annual_totals.get(focus_year - 1)
     pct_change_prior = (
-        ((latest_total - prior_total) / prior_total) * 100
+        ((focus_total - prior_total) / prior_total) * 100
         if prior_total and prior_total > 0
         else None
     )
     average_total = annual_totals.mean()
-    pct_vs_average = ((latest_total - average_total) / average_total) * 100 if average_total > 0 else None
+    pct_vs_average = ((focus_total - average_total) / average_total) * 100 if average_total > 0 else None
 
-    col_latest, col_range, col_prior, col_avg = st.columns(4)
-    col_latest.metric(f"Fatalities ({latest_complete_year})", f"{latest_total:,}")
+    col_focus, col_range, col_prior, col_avg = st.columns(4)
+    col_focus.metric(f"Fatalities ({focus_year})", f"{focus_total:,}")
     col_range.metric(
         "Best/Worst complete year",
         f"Best {best_year}: {best_value:,}",
@@ -732,13 +718,13 @@ def render_year_over_year(processed: pd.DataFrame, data_source: str) -> None:
         delta_color="off",
     )
     col_prior.metric(
-        "Latest vs prior year",
-        f"{latest_total:,}",
-        f"{pct_change_prior:+.1f}% vs {latest_complete_year - 1}" if pct_change_prior is not None else "N/A",
+        "Focus vs prior year",
+        f"{focus_total:,}",
+        f"{pct_change_prior:+.1f}% vs {focus_year - 1}" if pct_change_prior is not None else "N/A",
     )
     col_avg.metric(
-        "Latest vs complete-year avg",
-        f"{latest_total:,}",
+        "Focus vs complete-year avg",
+        f"{focus_total:,}",
         f"{pct_vs_average:+.1f}% vs avg" if pct_vs_average is not None else "N/A",
     )
 
@@ -772,7 +758,7 @@ def render_year_over_year(processed: pd.DataFrame, data_source: str) -> None:
         use_container_width=False,
     )
     st.altair_chart(
-        create_ranking_bar_chart(annual_totals, latest_complete_year, f"Complete-year ranking ({start_year}–{end_year})"),
+        create_ranking_bar_chart(annual_totals, focus_year, f"Complete-year ranking ({start_year}–{end_year})"),
         use_container_width=False,
     )
 
@@ -785,7 +771,7 @@ def render_year_over_year(processed: pd.DataFrame, data_source: str) -> None:
 
     monthly_totals = compute_monthly_totals_with_rolling(complete_data)
     st.altair_chart(
-        create_rolling_chart(monthly_totals[['Date', 'Rolling12']].dropna(), f"12-month rolling fatalities through {latest_complete_year}"),
+        create_rolling_chart(monthly_totals[['Date', 'Rolling12']].dropna(), f"12-month rolling fatalities through {end_year}"),
         use_container_width=False,
     )
 
@@ -797,11 +783,11 @@ def render_year_over_year(processed: pd.DataFrame, data_source: str) -> None:
 
 
 def main():
-    st.title("Year-to-Date Traffic Fatalities")
-    st.caption("Visualize cumulative traffic-related fatalities by month and compare year-over-year trends.")
+    st.title("Traffic Fatalities Dashboard")
+    st.caption("Review current year-to-date fatality trends and complete year-over-year comparisons.")
 
     try:
-        df_raw, data_source = load_dataframe(None, None)
+        df_raw, data_source = load_dataframe()
     except (FileNotFoundError, ValueError) as exc:
         st.error(str(exc))
         st.stop()
@@ -876,12 +862,9 @@ def main():
         st.warning("Not enough data to build the visualization. Try adjusting the selected years.")
         st.stop()
     pivot_complete = pivot_full.loc[:, [col for col in display_years if col in pivot_full.columns]]
-    full_history_pivot = build_cumulative_table(processed, years[0], years[-1], cutoff_month=report_cutoff_month)
-    if full_history_pivot.empty:
-        full_history_pivot = pivot_complete.copy()
-    report_history_pivot = build_cumulative_table(processed, years[0], report_year, cutoff_month=report_cutoff_month)
-    if report_history_pivot.empty:
-        report_history_pivot = pivot_complete.loc[:, [col for col in pivot_complete.columns if int(col) <= report_year]]
+    ytd_history_pivot = build_cumulative_table(processed, years[0], report_year, cutoff_month=report_cutoff_month)
+    if ytd_history_pivot.empty:
+        ytd_history_pivot = pivot_complete.copy()
 
     displayed_text = ", ".join(str(year) for year in pivot_complete.columns)
     st.markdown(
@@ -892,7 +875,7 @@ def main():
     st.caption(f"Latest record in source data: **{latest_data_label}**.")
     st.caption(f"Site updated: **{site_updated_label}**.")
 
-    history_pivot = pivot_complete if len(pivot_complete.columns) > 1 else full_history_pivot
+    history_pivot = pivot_complete if len(pivot_complete.columns) > 1 else ytd_history_pivot
 
     chart = create_altair_chart(
         pivot_complete,
@@ -912,7 +895,7 @@ def main():
     st.altair_chart(chart, use_container_width=False, key=chart_key)
 
     # From here down, use full-history YTD data with zero-fatality months carried through the cutoff.
-    full_pivot = report_history_pivot if not report_history_pivot.empty else pivot_complete
+    full_pivot = ytd_history_pivot if not ytd_history_pivot.empty else pivot_complete
     year_totals_ytd = get_ytd_totals(full_pivot)
 
     if not year_totals_ytd.empty:
