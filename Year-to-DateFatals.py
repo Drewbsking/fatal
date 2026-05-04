@@ -352,6 +352,49 @@ def create_rolling_chart(monthly_totals: pd.DataFrame, title_text: str | None = 
     return chart
 
 
+def create_annual_totals_chart(annual_totals: pd.Series, title_text: str | None = None) -> alt.Chart:
+    """Bar and trend chart for complete annual fatality totals."""
+    if annual_totals.empty:
+        return alt.Chart(pd.DataFrame({'Year': [], 'Fatalities': []}))
+
+    df = annual_totals.sort_index().reset_index()
+    df.columns = ['Year', 'Fatalities']
+    df['Year'] = df['Year'].astype(int)
+    df['YearLabel'] = df['Year'].astype(str)
+
+    bars = alt.Chart(df).mark_bar(color='#4c78a8', opacity=0.85).encode(
+        x=alt.X('YearLabel:N', title='Year', axis=alt.Axis(labelAngle=-45, labelColor='#000', tickColor='#000', titleColor='#000')),
+        y=alt.Y('Fatalities:Q', title='Annual fatalities', axis=alt.Axis(labelColor='#000', tickColor='#000', titleColor='#000')),
+        tooltip=[
+            alt.Tooltip('YearLabel:N', title='Year'),
+            alt.Tooltip('Fatalities:Q', title='Fatalities', format=','),
+        ],
+    )
+
+    layers = [bars]
+    if len(df) >= 2:
+        slope, intercept = np.polyfit(df['Year'].to_numpy(), df['Fatalities'].to_numpy(), 1)
+        trend_df = pd.DataFrame({
+            'Year': df['Year'],
+            'Fatalities': slope * df['Year'].to_numpy() + intercept,
+        })
+        trend_df['YearLabel'] = trend_df['Year'].astype(str)
+        trend = alt.Chart(trend_df).mark_line(color='black', strokeDash=[6, 3], size=2).encode(
+            x=alt.X('YearLabel:N', sort=df['YearLabel'].tolist(), title=None),
+            y='Fatalities:Q',
+        )
+        layers.append(trend)
+
+    chart = alt.layer(*layers).properties(
+        width=min(CHART_WIDTH, 850),
+        height=320,
+        title=alt.TitleParams(text=title_text or 'Annual fatalities by complete year', color='#000', fontSize=16, anchor='start'),
+    ).configure_axis(labelColor='#000', titleColor='#000', tickColor='#000', domainColor='#000'
+    ).configure_view(stroke='transparent'
+    ).configure(background='white')
+    return chart
+
+
 def create_altair_chart(
     pivot_complete: pd.DataFrame,
     history_pivot: pd.DataFrame,
@@ -596,6 +639,95 @@ def chart_to_png_bytes(chart: alt.Chart) -> bytes:
     return chart_spec_to_png_bytes(spec_json)
 
 
+def render_year_over_year(processed: pd.DataFrame, data_source: str) -> None:
+    """Render complete-year comparisons, excluding the partial current year."""
+    current_year = pd.Timestamp.today().year
+    complete_data = processed[processed['Year'] < current_year].copy()
+    if complete_data.empty:
+        st.warning(f"No complete years are available before {current_year}.")
+        return
+
+    complete_years = sorted(int(year) for year in complete_data['Year'].unique())
+    start_year, end_year = complete_years[0], complete_years[-1]
+    latest_complete_year = end_year
+
+    st.caption(f"Source: `{Path(data_source).name}`")
+    st.markdown(
+        f"Showing complete years **{start_year}–{end_year}**. "
+        f"The partial current year ({current_year}) is excluded from this view."
+    )
+
+    annual_totals = complete_data.groupby('Year')['Fatal Persons'].sum().sort_index()
+    latest_total = int(annual_totals.loc[latest_complete_year])
+    best_year = int(annual_totals.idxmin())
+    best_value = int(annual_totals.min())
+    worst_year = int(annual_totals.idxmax())
+    worst_value = int(annual_totals.max())
+    prior_total = annual_totals.get(latest_complete_year - 1)
+    pct_change_prior = (
+        ((latest_total - prior_total) / prior_total) * 100
+        if prior_total and prior_total > 0
+        else None
+    )
+    average_total = annual_totals.mean()
+    pct_vs_average = ((latest_total - average_total) / average_total) * 100 if average_total > 0 else None
+
+    col_latest, col_range, col_prior, col_avg = st.columns(4)
+    col_latest.metric(f"Fatalities ({latest_complete_year})", f"{latest_total:,}")
+    col_range.metric(
+        "Best/Worst complete year",
+        f"Best {best_year}: {best_value:,}",
+        f"Worst {worst_year}: {worst_value:,}",
+        delta_color="off",
+    )
+    col_prior.metric(
+        "Latest vs prior year",
+        f"{latest_total:,}",
+        f"{pct_change_prior:+.1f}% vs {latest_complete_year - 1}" if pct_change_prior is not None else "N/A",
+    )
+    col_avg.metric(
+        "Latest vs complete-year avg",
+        f"{latest_total:,}",
+        f"{pct_vs_average:+.1f}% vs avg" if pct_vs_average is not None else "N/A",
+    )
+
+    st.altair_chart(
+        create_annual_totals_chart(annual_totals, f"Annual fatalities by complete year ({start_year}–{end_year})"),
+        use_container_width=False,
+    )
+    st.altair_chart(
+        create_ranking_bar_chart(annual_totals, latest_complete_year, f"Complete-year ranking ({start_year}–{end_year})"),
+        use_container_width=False,
+    )
+
+    complete_pivot = build_cumulative_table(complete_data, start_year, end_year, cutoff_month=12)
+    avg_df = compute_monthly_average_from_pivot(complete_pivot)
+    if not avg_df.empty:
+        st.altair_chart(
+            create_average_bar_chart(avg_df, f"Average monthly fatalities across complete years ({start_year}–{end_year})"),
+            use_container_width=False,
+        )
+
+    monthly_totals = (
+        complete_data.groupby(['Year', 'Month'])['Fatal Persons']
+        .sum()
+        .reset_index()
+        .sort_values(['Year', 'Month'])
+    )
+    monthly_totals['Date'] = pd.to_datetime(dict(year=monthly_totals['Year'], month=monthly_totals['Month'], day=1))
+    monthly_totals['Rolling12'] = monthly_totals['Fatal Persons'].rolling(window=12).sum()
+    st.altair_chart(
+        create_rolling_chart(monthly_totals[['Date', 'Rolling12']].dropna(), f"12-month rolling fatalities through {latest_complete_year}"),
+        use_container_width=False,
+    )
+
+    with st.expander("Show complete-year totals"):
+        st.dataframe(
+            annual_totals.rename("Fatalities").astype(int).reset_index(),
+            use_container_width=True,
+        )
+
+
 def main():
     st.title("Year-to-Date Traffic Fatalities")
     st.caption("Visualize cumulative traffic-related fatalities by month and compare year-over-year trends.")
@@ -620,6 +752,16 @@ def main():
     if processed.empty:
         st.error("No valid crash summaries after 2008 were detected in the provided file.")
         st.stop()
+
+    view = st.radio(
+        "Dashboard view",
+        ["YTD Dashboard", "Year Over Year"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    if view == "Year Over Year":
+        render_year_over_year(processed, data_source)
+        return
 
     years = sorted(int(year) for year in processed['Year'].unique())
     min_year, max_year = years[0], years[-1]
