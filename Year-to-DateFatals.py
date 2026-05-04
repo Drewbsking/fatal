@@ -122,24 +122,19 @@ def preprocess_crash_data(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_latest_comparison_year(data: pd.DataFrame) -> int:
-    """Return the latest year with month-level data when available."""
+    """Return the latest year in the dataset for YTD comparison."""
     years_post_2008 = sorted(int(year) for year in data['Year'].dropna().unique() if int(year) > 2008)
     if years_post_2008:
-        month_counts = (
-            data.loc[data['Year'].isin(years_post_2008)]
-            .groupby('Year')['Month']
-            .nunique()
-            .sort_index()
-        )
-        substantive_years = [int(year) for year, count in month_counts.items() if int(count) >= 2]
-        if substantive_years:
-            return substantive_years[-1]
         return years_post_2008[-1]
     return int(data['Year'].max())
 
 
 def get_ytd_cutoff_month(data: pd.DataFrame, comparison_year: int) -> int:
     """Return the latest observed month for the comparison year."""
+    today = pd.Timestamp.today()
+    if int(comparison_year) == int(today.year):
+        return max(1, int(today.month) - 1)
+
     year_months = data.loc[data['Year'] == comparison_year, 'Month'].dropna()
     if year_months.empty:
         return 12
@@ -180,7 +175,7 @@ def build_cumulative_table(
     merged['last_month_observed'] = merged['Year'].map(last_month_by_year).fillna(0).astype(int)
     merged['max_month_allowed'] = merged['last_month_observed']
     if cutoff_month is not None:
-        merged['max_month_allowed'] = merged['max_month_allowed'].clip(upper=int(cutoff_month))
+        merged['max_month_allowed'] = int(cutoff_month)
     merged = merged[merged['Month'] <= merged['max_month_allowed']]
     merged = merged.drop(columns=['last_month_observed', 'max_month_allowed']).fillna(0)
 
@@ -642,8 +637,6 @@ def main():
     report_cutoff_month = get_ytd_cutoff_month(processed, report_year)
     report_cutoff_label = MONTH_LABELS[report_cutoff_month - 1]
     latest_data_label = format_latest_data_date(processed)
-    latest_data_year = int(processed['Year'].max())
-    latest_year_months = int(processed.loc[processed['Year'] == latest_data_year, 'Month'].nunique())
     default_end = report_year if report_year in years else max_year
     default_focus_year = report_year if report_year in years else current_year
 
@@ -705,11 +698,6 @@ def main():
     )
 
     st.caption(f"Latest record in source data: **{latest_data_label}**.")
-    if latest_data_year > report_year:
-        st.info(
-            f"{latest_data_year} has only {latest_year_months} month(s) of data, so quick stats use "
-            f"{report_year} through {report_cutoff_label} until the current year has enough data."
-        )
 
     history_pivot = pivot_complete if len(pivot_complete.columns) > 1 else full_history_pivot
 
@@ -755,8 +743,7 @@ def main():
             on_click="ignore",
         )
 
-    # From here down, use reportable full-history YTD data (same cutoff month for every year).
-    # Partial future/current years are excluded so stale datasets do not skew quick stats.
+    # From here down, use full-history YTD data with zero-fatality months carried through the cutoff.
     full_pivot = report_history_pivot if not report_history_pivot.empty else pivot_complete
     year_totals_ytd = get_ytd_totals(full_pivot)
 
@@ -782,7 +769,7 @@ def main():
         )
 
         st.markdown("---")
-        st.subheader(f"Quick stats through {report_cutoff_label} (reportable years through {report_year})")
+        st.subheader(f"Quick stats through {report_cutoff_label} (all years)")
         col_focus, col_best, col_prior, col_all = st.columns(4)
         col_focus.metric(f"YTD fatalities ({report_year})", f"{focus_total:,}")
         col_best.metric(
