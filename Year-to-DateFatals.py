@@ -747,10 +747,10 @@ def main():
 
     if not year_totals_ytd.empty:
         focus_total = int(year_totals_ytd.get(report_year, 0))
-        best_year = int(year_totals_ytd.idxmax())
-        best_value = int(year_totals_ytd.max())
-        worst_year = int(year_totals_ytd.idxmin())
-        worst_value = int(year_totals_ytd.min())
+        best_year = int(year_totals_ytd.idxmin())
+        best_value = int(year_totals_ytd.min())
+        worst_year = int(year_totals_ytd.idxmax())
+        worst_value = int(year_totals_ytd.max())
 
         prev_total = year_totals_ytd.get(report_year - 1)
         pct_change_prior = (
@@ -772,8 +772,9 @@ def main():
         col_focus.metric(f"YTD fatalities ({report_year})", f"{focus_total:,}")
         col_best.metric(
             f"Best/Worst through {report_cutoff_label}",
-            f"{best_year}: {best_value:,}",
+            f"Best {best_year}: {best_value:,}",
             f"Worst {worst_year}: {worst_value:,}",
+            delta_color="off",
         )
         col_prior.metric(
             "Focus vs prior year",
