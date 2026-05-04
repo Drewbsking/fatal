@@ -146,6 +146,15 @@ def get_ytd_cutoff_month(data: pd.DataFrame, comparison_year: int) -> int:
     return int(year_months.max())
 
 
+def format_latest_data_date(data: pd.DataFrame) -> str:
+    """Return a display label for the newest crash date in the dataset."""
+    latest_date = data['Date'].max()
+    if pd.isna(latest_date):
+        return "unknown"
+    timestamp = pd.Timestamp(latest_date)
+    return f"{timestamp:%b} {timestamp.day}, {timestamp.year}"
+
+
 def build_cumulative_table(
     data: pd.DataFrame,
     start_year: int,
@@ -455,6 +464,7 @@ def create_altair_chart(
     )
 
     layers = [line, points]
+    trend_frames = []
 
     if show_focus_trend and focus_year in pivot_complete.columns:
         focus_series = pivot_complete[focus_year].dropna()
@@ -470,15 +480,8 @@ def create_altair_chart(
                 trend_y = np.clip(trend_y, 0, None)
                 focus_df = pd.DataFrame({'Month': x_plot, 'Fatal Persons': trend_y})
                 focus_df['MonthLabel'] = focus_df['Month'].round().astype(int).apply(lambda idx: MONTH_LABELS[idx - 1])
-                focus_layer = alt.Chart(focus_df).mark_line(
-                    strokeDash=[6, 3],
-                    color='black',
-                    size=2,
-                ).encode(
-                    x=alt.X('MonthLabel:N', title=None, sort=MONTH_LABELS),
-                    y='Fatal Persons:Q',
-                )
-                layers.append(focus_layer)
+                focus_df['Trend line'] = 'Focus-year trend'
+                trend_frames.append(focus_df)
 
     history_columns = [col for col in history_pivot.columns if int(col) != focus_year]
     if show_history_trend and len(history_columns) >= 1:
@@ -504,16 +507,37 @@ def create_altair_chart(
             hist_df = pd.DataFrame({'Month': x_line, 'Fatal Persons': y_line})
             hist_df['MonthLabel'] = hist_df['Month'].round().astype(int).clip(1, 12).apply(lambda idx: MONTH_LABELS[idx - 1])
             hist_df = hist_df.drop_duplicates(subset=['MonthLabel'], keep='first')
-            hist_layer = alt.Chart(hist_df).mark_line(
-                strokeDash=[6, 3],
-                color='#555555',
-                opacity=0.95,
-                size=2,
-            ).encode(
-                x=alt.X('MonthLabel:N', title=None, sort=MONTH_LABELS),
-                y='Fatal Persons:Q',
-            )
-            layers.append(hist_layer)
+            hist_df['Trend line'] = 'Historical trend'
+            trend_frames.append(hist_df)
+
+    if trend_frames:
+        trend_df = pd.concat(trend_frames, ignore_index=True)
+        trend_domain = [label for label in ['Focus-year trend', 'Historical trend'] if label in trend_df['Trend line'].unique()]
+        trend_color_map = {
+            'Focus-year trend': 'black',
+            'Historical trend': '#555555',
+        }
+        trend_layer = alt.Chart(trend_df).mark_line(
+            strokeDash=[6, 3],
+            opacity=0.95,
+            size=2,
+        ).encode(
+            detail=alt.Detail('Trend line:N'),
+            x=alt.X('MonthLabel:N', title=None, sort=MONTH_LABELS),
+            y='Fatal Persons:Q',
+            color=alt.Color(
+                'Trend line:N',
+                scale=alt.Scale(domain=trend_domain, range=[trend_color_map[label] for label in trend_domain]),
+                legend=alt.Legend(
+                    title='Trend line',
+                    labelColor='#000',
+                    titleColor='#000',
+                    symbolType='stroke',
+                    symbolStrokeWidth=3,
+                ),
+            ),
+        )
+        layers.append(trend_layer)
 
     if show_focus_labels:
         focus_label_data = tidy[tidy['Year'] == focus_year].copy()
@@ -617,8 +641,11 @@ def main():
     report_year = get_latest_comparison_year(processed)
     report_cutoff_month = get_ytd_cutoff_month(processed, report_year)
     report_cutoff_label = MONTH_LABELS[report_cutoff_month - 1]
+    latest_data_label = format_latest_data_date(processed)
+    latest_data_year = int(processed['Year'].max())
+    latest_year_months = int(processed.loc[processed['Year'] == latest_data_year, 'Month'].nunique())
     default_end = report_year if report_year in years else max_year
-    default_focus_year = current_year if current_year in years else report_year
+    default_focus_year = report_year if report_year in years else current_year
 
     with st.sidebar:
         st.caption(f"Source: `{Path(data_source).name}`")
@@ -629,7 +656,11 @@ def main():
             max_year,
             (default_start, default_end),
         )
-        show_history_trend = st.checkbox("Show historical trend line", value=True, key="history_trend")
+        show_history_trend = st.checkbox(
+            "Show historical trend line for selected years",
+            value=True,
+            key="history_trend",
+        )
 
         st.header("Focus")
         focus_options = list(reversed(years))
@@ -663,12 +694,22 @@ def main():
     full_history_pivot = build_cumulative_table(processed, years[0], years[-1], cutoff_month=report_cutoff_month)
     if full_history_pivot.empty:
         full_history_pivot = pivot_complete.copy()
+    report_history_pivot = build_cumulative_table(processed, years[0], report_year, cutoff_month=report_cutoff_month)
+    if report_history_pivot.empty:
+        report_history_pivot = pivot_complete.loc[:, [col for col in pivot_complete.columns if int(col) <= report_year]]
 
     displayed_text = ", ".join(str(year) for year in pivot_complete.columns)
     st.markdown(
         f"Showing {len(pivot_complete.columns)} year(s): **{displayed_text}** through **{chart_cutoff_label}** "
         f"(comparison window from {report_year}, focus {focus_year}, slider {start_year}–{end_year})."
     )
+
+    st.caption(f"Latest record in source data: **{latest_data_label}**.")
+    if latest_data_year > report_year:
+        st.info(
+            f"{latest_data_year} has only {latest_year_months} month(s) of data, so quick stats use "
+            f"{report_year} through {report_cutoff_label} until the current year has enough data."
+        )
 
     history_pivot = pivot_complete if len(pivot_complete.columns) > 1 else full_history_pivot
 
@@ -714,8 +755,9 @@ def main():
             on_click="ignore",
         )
 
-    # From here down, use full-history YTD data (same cutoff month for every year)
-    full_pivot = full_history_pivot if not full_history_pivot.empty else pivot_complete
+    # From here down, use reportable full-history YTD data (same cutoff month for every year).
+    # Partial future/current years are excluded so stale datasets do not skew quick stats.
+    full_pivot = report_history_pivot if not report_history_pivot.empty else pivot_complete
     year_totals_ytd = get_ytd_totals(full_pivot)
 
     if not year_totals_ytd.empty:
@@ -740,7 +782,7 @@ def main():
         )
 
         st.markdown("---")
-        st.subheader(f"Quick stats through {report_cutoff_label} (all years)")
+        st.subheader(f"Quick stats through {report_cutoff_label} (reportable years through {report_year})")
         col_focus, col_best, col_prior, col_all = st.columns(4)
         col_focus.metric(f"YTD fatalities ({report_year})", f"{focus_total:,}")
         col_best.metric(
