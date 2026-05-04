@@ -143,6 +143,11 @@ def format_latest_data_date(data: pd.DataFrame) -> str:
     return f"{timestamp:%b} {timestamp.day}, {timestamp.year}"
 
 
+def format_display_date(timestamp: pd.Timestamp) -> str:
+    """Return a concise date label."""
+    return f"{timestamp:%b} {timestamp.day}, {timestamp.year}"
+
+
 @st.cache_data(show_spinner=False)
 def build_cumulative_table(
     data: pd.DataFrame,
@@ -506,7 +511,6 @@ def create_altair_chart(
             y_vals = focus_series.loc[x_vals].to_numpy()
             if len(np.unique(x_vals)) >= 2:
                 slope, intercept = np.polyfit(x_vals, y_vals, 1)
-                intercept = -slope  # ensure line passes through (Jan, 0)
                 x_plot = list(range(min(focus_months), max(focus_months) + 1))
                 trend_y = slope * np.array(x_plot) + intercept
                 trend_y = np.clip(trend_y, 0, None)
@@ -531,7 +535,6 @@ def create_altair_chart(
             hist_x = np.array(hist_months)
             hist_y = np.array(hist_values)
             slope, intercept = np.polyfit(hist_x, hist_y, 1)
-            intercept = -slope
             max_month = int(hist_x.max())
             x_line = np.arange(1, max_month + 1)
             y_line = slope * x_line + intercept
@@ -852,6 +855,7 @@ def main():
     report_cutoff_month = get_ytd_cutoff_month(processed, report_year)
     report_cutoff_label = MONTH_LABELS[report_cutoff_month - 1]
     latest_data_label = format_latest_data_date(processed)
+    site_updated_label = format_display_date(pd.Timestamp.today())
     slider_max_year = max(max_year, current_year)
     default_end = min(slider_max_year, current_year)
 
@@ -913,6 +917,7 @@ def main():
     )
 
     st.caption(f"Latest record in source data: **{latest_data_label}**.")
+    st.caption(f"Site updated: **{site_updated_label}**.")
 
     history_pivot = pivot_complete if len(pivot_complete.columns) > 1 else full_history_pivot
 
