@@ -648,13 +648,54 @@ def render_year_over_year(processed: pd.DataFrame, data_source: str) -> None:
         return
 
     complete_years = sorted(int(year) for year in complete_data['Year'].unique())
-    start_year, end_year = complete_years[0], complete_years[-1]
+    min_year, max_year = complete_years[0], complete_years[-1]
+    default_start = 2015 if min_year <= 2015 <= max_year else min_year
+    with st.sidebar:
+        st.caption(f"Source: `{Path(data_source).name}`")
+        st.header("Complete Years")
+        start_year, end_year = st.slider(
+            "Year range",
+            min_year,
+            max_year,
+            (default_start, max_year),
+            key="yoy_year_range",
+        )
+        year_options = [year for year in complete_years if start_year <= year <= end_year]
+        focus_year = st.selectbox(
+            "Focus year (highlighted)",
+            list(reversed(year_options)),
+            index=0,
+            key="yoy_focus_year",
+        )
+        show_history_trend = st.checkbox(
+            "Show historical trend line for selected years",
+            value=True,
+            key="yoy_history_trend",
+        )
+        show_focus_trend = st.checkbox(
+            "Show focus-year trend line",
+            value=True,
+            key="yoy_focus_trend",
+        )
+
+        st.header("Labels")
+        label_mode = st.selectbox(
+            "Value label mode",
+            ["None", "Focus year", "Historical years", "All"],
+            index=0,
+            key="yoy_label_mode",
+        )
+        show_focus_labels = label_mode in {"Focus year", "All"}
+        show_history_labels = label_mode in {"Historical years", "All"}
+
+    complete_data = complete_data[(complete_data['Year'] >= start_year) & (complete_data['Year'] <= end_year)].copy()
+    complete_years = sorted(int(year) for year in complete_data['Year'].unique())
     latest_complete_year = end_year
 
-    st.caption(f"Source: `{Path(data_source).name}`")
     st.markdown(
         f"Showing complete years **{start_year}–{end_year}**. "
-        f"The partial current year ({current_year}) is excluded from this view."
+        f"The partial current year ({current_year}) is excluded from this view. "
+        f"Focus year: **{focus_year}**."
     )
 
     annual_totals = complete_data.groupby('Year')['Fatal Persons'].sum().sort_index()
@@ -691,6 +732,30 @@ def render_year_over_year(processed: pd.DataFrame, data_source: str) -> None:
         f"{pct_vs_average:+.1f}% vs avg" if pct_vs_average is not None else "N/A",
     )
 
+    complete_pivot = build_cumulative_table(complete_data, start_year, end_year, cutoff_month=12)
+    if not complete_pivot.empty:
+        line_years = [year for year in complete_years if year in complete_pivot.columns]
+        pivot_complete = complete_pivot.loc[:, line_years]
+        line_chart = create_altair_chart(
+            pivot_complete,
+            pivot_complete,
+            focus_year,
+            show_focus_trend,
+            show_history_trend,
+            show_focus_labels,
+            show_history_labels,
+            title_text=f"Year-over-year cumulative fatalities ({start_year}–{end_year}) — Focus {focus_year}",
+        )
+        st.altair_chart(
+            line_chart,
+            use_container_width=False,
+            key=(
+                f"yoy_line_{start_year}_{end_year}_{focus_year}_"
+                f"{int(show_focus_trend)}_{int(show_history_trend)}_"
+                f"{int(show_focus_labels)}_{int(show_history_labels)}"
+            ),
+        )
+
     st.altair_chart(
         create_annual_totals_chart(annual_totals, f"Annual fatalities by complete year ({start_year}–{end_year})"),
         use_container_width=False,
@@ -700,7 +765,6 @@ def render_year_over_year(processed: pd.DataFrame, data_source: str) -> None:
         use_container_width=False,
     )
 
-    complete_pivot = build_cumulative_table(complete_data, start_year, end_year, cutoff_month=12)
     avg_df = compute_monthly_average_from_pivot(complete_pivot)
     if not avg_df.empty:
         st.altair_chart(
@@ -753,12 +817,14 @@ def main():
         st.error("No valid crash summaries after 2008 were detected in the provided file.")
         st.stop()
 
-    view = st.radio(
-        "Dashboard view",
-        ["YTD Dashboard", "Year Over Year"],
-        horizontal=True,
-        label_visibility="collapsed",
-    )
+    with st.sidebar:
+        st.header("View")
+        view = st.radio(
+            "Dashboard view",
+            ["YTD Dashboard", "Year Over Year"],
+            index=0,
+            key="dashboard_view",
+        )
     if view == "Year Over Year":
         render_year_over_year(processed, data_source)
         return
