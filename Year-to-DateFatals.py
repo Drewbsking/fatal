@@ -121,14 +121,6 @@ def preprocess_crash_data(df: pd.DataFrame) -> pd.DataFrame:
     return clean
 
 
-def get_latest_comparison_year(data: pd.DataFrame) -> int:
-    """Return the latest year in the dataset for YTD comparison."""
-    years_post_2008 = sorted(int(year) for year in data['Year'].dropna().unique() if int(year) > 2008)
-    if years_post_2008:
-        return years_post_2008[-1]
-    return int(data['Year'].max())
-
-
 def get_ytd_cutoff_month(data: pd.DataFrame, comparison_year: int) -> int:
     """Return the latest observed month for the comparison year."""
     today = pd.Timestamp.today()
@@ -284,7 +276,7 @@ def create_ranking_bar_chart(year_totals: pd.Series, focus_year: int, title_text
 
 
 def create_index_chart(index_df: pd.DataFrame, title_text: str | None = None) -> alt.Chart:
-    """Bar chart showing observed vs expected index for the focus year."""
+    """Bar chart showing observed vs expected index for the current year."""
     if index_df.empty:
         return alt.Chart(pd.DataFrame({'MonthLabel': [], 'IndexValue': []}))
     plot_df = index_df.copy()
@@ -317,7 +309,7 @@ def create_index_chart(index_df: pd.DataFrame, title_text: str | None = None) ->
     chart = alt.layer(bars, baseline_rule).properties(
         width=min(CHART_WIDTH, 850),
         height=260,
-        title=alt.TitleParams(text=title_text or 'Focus month index (observed vs 5-year avg)', color='#000', fontSize=16, anchor='start'),
+        title=alt.TitleParams(text=title_text or 'Current month index (observed vs 5-year avg)', color='#000', fontSize=16, anchor='start'),
     ).configure_axis(labelColor='#000', titleColor='#000', tickColor='#000', domainColor='#000'
     ).configure_view(stroke='transparent'
     ).configure(background='white')
@@ -362,7 +354,6 @@ def create_rolling_chart(monthly_totals: pd.DataFrame, title_text: str | None = 
 
 def create_altair_chart(
     pivot_complete: pd.DataFrame,
-    filtered_data: pd.DataFrame,
     history_pivot: pd.DataFrame,
     focus_year: int,
     show_focus_trend: bool,
@@ -463,7 +454,7 @@ def create_altair_chart(
 
     if show_focus_trend and focus_year in pivot_complete.columns:
         focus_series = pivot_complete[focus_year].dropna()
-        focus_months = sorted(filtered_data.loc[filtered_data['Year'] == focus_year, 'Month'].unique())
+        focus_months = sorted(int(month) for month in focus_series.index)
         if len(focus_months) >= 2 and len(focus_series) >= 2:
             x_vals = np.array(focus_months)
             y_vals = focus_series.loc[x_vals].to_numpy()
@@ -475,7 +466,7 @@ def create_altair_chart(
                 trend_y = np.clip(trend_y, 0, None)
                 focus_df = pd.DataFrame({'Month': x_plot, 'Fatal Persons': trend_y})
                 focus_df['MonthLabel'] = focus_df['Month'].round().astype(int).apply(lambda idx: MONTH_LABELS[idx - 1])
-                focus_df['Trend line'] = 'Focus-year trend'
+                focus_df['Trend line'] = 'Current-year trend'
                 trend_frames.append(focus_df)
 
     history_columns = [col for col in history_pivot.columns if int(col) != focus_year]
@@ -507,9 +498,9 @@ def create_altair_chart(
 
     if trend_frames:
         trend_df = pd.concat(trend_frames, ignore_index=True)
-        trend_domain = [label for label in ['Focus-year trend', 'Historical trend'] if label in trend_df['Trend line'].unique()]
+        trend_domain = [label for label in ['Current-year trend', 'Historical trend'] if label in trend_df['Trend line'].unique()]
         trend_color_map = {
-            'Focus-year trend': 'black',
+            'Current-year trend': 'black',
             'Historical trend': '#555555',
         }
         trend_layer = alt.Chart(trend_df).mark_line(
@@ -630,16 +621,17 @@ def main():
         st.error("No valid crash summaries after 2008 were detected in the provided file.")
         st.stop()
 
-    years = sorted(processed['Year'].unique())
+    years = sorted(int(year) for year in processed['Year'].unique())
     min_year, max_year = years[0], years[-1]
     default_start = 2015 if min_year <= 2015 <= max_year else min_year
     current_year = pd.Timestamp.today().year
-    report_year = get_latest_comparison_year(processed)
+    focus_year = current_year
+    report_year = current_year
     report_cutoff_month = get_ytd_cutoff_month(processed, report_year)
     report_cutoff_label = MONTH_LABELS[report_cutoff_month - 1]
     latest_data_label = format_latest_data_date(processed)
-    default_end = report_year if report_year in years else max_year
-    default_focus_year = report_year if report_year in years else current_year
+    slider_max_year = max(max_year, current_year)
+    default_end = min(slider_max_year, current_year)
 
     with st.sidebar:
         st.caption(f"Source: `{Path(data_source).name}`")
@@ -647,7 +639,7 @@ def main():
         start_year, end_year = st.slider(
             "Year range",
             min_year,
-            max_year,
+            slider_max_year,
             (default_start, default_end),
         )
         show_history_trend = st.checkbox(
@@ -656,22 +648,17 @@ def main():
             key="history_trend",
         )
 
-        st.header("Focus")
-        focus_options = list(reversed(years))
-        focus_year = st.selectbox(
-            "Focus year (highlighted)",
-            focus_options,
-            index=focus_options.index(default_focus_year) if default_focus_year in focus_options else 0,
-        )
-        show_focus_trend = st.checkbox("Show focus-year trend line", value=True, key="focus_trend")
+        st.header("Current Year")
+        st.caption(f"Highlighted year: **{focus_year}**")
+        show_focus_trend = st.checkbox("Show current-year trend line", value=True, key="focus_trend")
 
         st.header("Labels")
         label_mode = st.selectbox(
             "Value label mode",
-            ["None", "Focus year", "Historical years", "All"],
+            ["None", "Current year", "Historical years", "All"],
             index=0,
         )
-        show_focus_labels = label_mode in {"Focus year", "All"}
+        show_focus_labels = label_mode in {"Current year", "All"}
         show_history_labels = label_mode in {"Historical years", "All"}
 
     slider_years = [year for year in years if start_year <= year <= end_year]
@@ -695,25 +682,22 @@ def main():
     displayed_text = ", ".join(str(year) for year in pivot_complete.columns)
     st.markdown(
         f"Showing {len(pivot_complete.columns)} year(s): **{displayed_text}** through **{chart_cutoff_label}** "
-        f"(comparison window from {report_year}, focus {focus_year}, slider {start_year}–{end_year})."
+        f"(current year {focus_year}, slider {start_year}–{end_year})."
     )
 
     st.caption(f"Latest record in source data: **{latest_data_label}**.")
 
     history_pivot = pivot_complete if len(pivot_complete.columns) > 1 else full_history_pivot
 
-    filtered_subset = processed[processed['Year'].isin(display_years)]
-
     chart = create_altair_chart(
         pivot_complete,
-        filtered_subset,
         history_pivot,
         focus_year,
         show_focus_trend,
         show_history_trend,
         show_focus_labels,
         show_history_labels,
-        title_text=f"Year-to-Date Fatalities ({start_year}–{end_year}) — Focus {focus_year}",
+        title_text=f"Year-to-Date Fatalities ({start_year}–{end_year}) — Current Year {focus_year}",
     )
     chart_key = (
         f"ytd_chart_{start_year}_{end_year}_{focus_year}_{chart_cutoff_month}_"
@@ -777,17 +761,17 @@ def main():
             delta_color="off",
         )
         col_prior.metric(
-            "Focus vs prior year",
+            "Current vs prior year",
             f"{focus_total:,}",
             f"{pct_change_prior:+.1f}% vs {report_year - 1}" if pct_change_prior is not None else "N/A",
         )
         col_all.metric(
-            "Focus vs all-years avg",
+            "Current vs all-years avg",
             f"{focus_total:,}",
             f"{pct_vs_all:+.1f}% vs all-years avg" if pct_vs_all is not None else "N/A",
         )
 
-    # Index chart using full YTD history (5-year avg baseline before focus)
+    # Index chart using full YTD history (5-year avg baseline before the current year)
     safe_pivot = full_pivot
     focus_year_index = max(safe_pivot.columns.astype(int)) if not safe_pivot.empty else None
     monthly_inc_all = safe_pivot.diff().fillna(safe_pivot)
@@ -806,12 +790,12 @@ def main():
         index_df['Observed'] / index_df['Expected'],
         0,
     )
-    index_chart = create_index_chart(index_df, title_text=f"Focus month index ({report_year} vs 5-year avg through {report_cutoff_label})")
+    index_chart = create_index_chart(index_df, title_text=f"Current month index ({report_year} vs 5-year avg through {report_cutoff_label})")
     st.altair_chart(index_chart, use_container_width=False)
 
     # Year ranking as bar chart (all years, same YTD cutoff)
     focus_for_ranking = report_year if not year_totals_ytd.empty else focus_year
-    ranking_chart = create_ranking_bar_chart(year_totals_ytd, focus_for_ranking, title_text=f"Year ranking through {report_cutoff_label} (focus {report_year})")
+    ranking_chart = create_ranking_bar_chart(year_totals_ytd, focus_for_ranking, title_text=f"Year ranking through {report_cutoff_label} (current year {report_year})")
     st.altair_chart(ranking_chart, use_container_width=False)
 
     # Average monthly bar chart (all years, same YTD cutoff)
