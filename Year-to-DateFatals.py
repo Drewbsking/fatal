@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 
 import altair as alt
@@ -548,6 +549,7 @@ def create_altair_chart(
     chart = alt.layer(*layers).resolve_scale(color='independent').properties(
         width=min(CHART_WIDTH, 850),
         height=min(CHART_HEIGHT, 520),
+        autosize=alt.AutoSizeParams(type='none', contains='padding', resize=False),
         title=alt.TitleParams(
             text=title_text,
             color='#000',
@@ -570,17 +572,19 @@ def create_altair_chart(
     return chart
 
 
-def chart_to_png_bytes(chart: alt.Chart) -> bytes | None:
+@st.cache_data(show_spinner=False)
+def chart_spec_to_png_bytes(spec_json: str) -> bytes:
+    """Convert a Vega-Lite spec into a PNG and cache the expensive render."""
+    return vlc.vegalite_to_png(json.loads(spec_json), scale=1.0)
+
+
+def chart_to_png_bytes(chart: alt.Chart) -> bytes:
     """Convert an Altair chart into a PNG for download."""
-    try:
-        spec = chart.to_dict()
-        spec['width'] = CHART_WIDTH
-        spec['height'] = CHART_HEIGHT
-        png_bytes = vlc.vegalite_to_png(spec, scale=1.0)
-        return png_bytes
-    except Exception as exc:  # pragma: no cover - best effort
-        st.warning(f"Unable to create image export: {exc}")
-        return None
+    spec = chart.to_dict()
+    spec['width'] = CHART_WIDTH
+    spec['height'] = CHART_HEIGHT
+    spec_json = json.dumps(spec, sort_keys=True, separators=(',', ':'))
+    return chart_spec_to_png_bytes(spec_json)
 
 
 def main():
@@ -691,14 +695,24 @@ def main():
         f"{int(show_focus_labels)}_{int(show_history_labels)}"
     )
     st.altair_chart(chart, use_container_width=False, key=chart_key)
-    png_bytes = chart_to_png_bytes(chart)
-    if png_bytes:
+
+    prepare_png = st.button("Prepare chart PNG", type="primary")
+    if prepare_png:
+        with st.spinner("Preparing PNG download..."):
+            try:
+                st.session_state["ytd_png_bytes"] = chart_to_png_bytes(chart)
+                st.session_state["ytd_png_key"] = chart_key
+            except Exception as exc:  # pragma: no cover - best effort
+                st.warning(f"Unable to create image export: {exc}")
+
+    if st.session_state.get("ytd_png_key") == chart_key and st.session_state.get("ytd_png_bytes"):
         st.download_button(
             "Download chart as PNG",
-            data=png_bytes,
+            data=st.session_state["ytd_png_bytes"],
             file_name="year_to_date_fatalities.png",
             mime="image/png",
             type="primary",
+            on_click="ignore",
         )
 
     # From here down, use full-history YTD data (same cutoff month for every year)
