@@ -625,8 +625,9 @@ def main():
         st.stop()
 
     processed = preprocess_crash_data(df_raw)
+    processed = processed[processed['Year'] > 2008].copy()
     if processed.empty:
-        st.error("No valid crash summaries were detected in the provided file.")
+        st.error("No valid crash summaries after 2008 were detected in the provided file.")
         st.stop()
 
     years = sorted(processed['Year'].unique())
@@ -700,9 +701,6 @@ def main():
     st.caption(f"Latest record in source data: **{latest_data_label}**.")
 
     history_pivot = pivot_complete if len(pivot_complete.columns) > 1 else full_history_pivot
-
-    if start_year <= 2008:
-        st.warning("Data from 2008 and earlier reflects annual totals only (no month-by-month breakdown).")
 
     filtered_subset = processed[processed['Year'].isin(display_years)]
 
@@ -789,7 +787,7 @@ def main():
         )
 
     # Index chart using full YTD history (5-year avg baseline before focus)
-    safe_pivot = full_pivot.loc[:, [c for c in full_pivot.columns if int(c) > 2008]]
+    safe_pivot = full_pivot
     focus_year_index = max(safe_pivot.columns.astype(int)) if not safe_pivot.empty else None
     monthly_inc_all = safe_pivot.diff().fillna(safe_pivot)
     prev_years = [y for y in monthly_inc_all.columns if int(y) < int(focus_year_index)] if focus_year_index else []
@@ -821,10 +819,9 @@ def main():
         avg_chart = create_average_bar_chart(avg_df, f"Average monthly fatalities through {report_cutoff_label} across all years")
         st.altair_chart(avg_chart, use_container_width=False)
 
-    # 12-month rolling fatalities (post-2008, all years)
+    # 12-month rolling fatalities
     monthly_totals = (
-        processed[processed['Year'] > 2008]
-        .groupby(['Year', 'Month'])['Fatal Persons']
+        processed.groupby(['Year', 'Month'])['Fatal Persons']
         .sum()
         .reset_index()
         .sort_values(['Year', 'Month'])
