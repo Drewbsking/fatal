@@ -984,12 +984,6 @@ def main():
     ranking_chart = create_ranking_bar_chart(year_totals_ytd, focus_for_ranking, title_text=f"Year ranking through {report_cutoff_label} (current year {report_year})")
     st.altair_chart(ranking_chart, use_container_width=False)
 
-    # Average monthly bar chart (all years, same YTD cutoff)
-    avg_df = compute_monthly_average_from_pivot(full_pivot)
-    if not avg_df.empty:
-        avg_chart = create_average_bar_chart(avg_df, f"Average monthly fatalities through {report_cutoff_label} across all years")
-        st.altair_chart(avg_chart, use_container_width=False)
-
     with st.expander("Show cumulative table"):
         formatted = pivot_complete.round(0).fillna(0).astype(int)
         st.dataframe(formatted, use_container_width=True)
