@@ -685,7 +685,12 @@ def main():
         show_history_labels,
         title_text=f"Year-to-Date Fatalities ({start_year}–{end_year}) — Focus {focus_year}",
     )
-    st.altair_chart(chart, use_container_width=False)
+    chart_key = (
+        f"ytd_chart_{start_year}_{end_year}_{focus_year}_{chart_cutoff_month}_"
+        f"{int(show_focus_trend)}_{int(show_history_trend)}_"
+        f"{int(show_focus_labels)}_{int(show_history_labels)}"
+    )
+    st.altair_chart(chart, use_container_width=False, key=chart_key)
     png_bytes = chart_to_png_bytes(chart)
     if png_bytes:
         st.download_button(
