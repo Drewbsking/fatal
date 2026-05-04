@@ -511,8 +511,11 @@ def create_altair_chart(
                 slope, intercept = np.polyfit(x_vals, y_vals, 1)
                 x_plot = list(range(min(focus_months), max(focus_months) + 1))
                 trend_y = slope * np.array(x_plot) + intercept
-                trend_y = np.clip(trend_y, 0, None)
                 focus_df = pd.DataFrame({'Month': x_plot, 'Fatal Persons': trend_y})
+                focus_df = focus_df[focus_df['Fatal Persons'] >= 0]
+                if len(focus_df) < 2:
+                    focus_df = pd.DataFrame()
+            if not focus_df.empty:
                 focus_df['MonthLabel'] = focus_df['Month'].round().astype(int).apply(lambda idx: MONTH_LABELS[idx - 1])
                 focus_df['Trend line'] = focus_trend_label
                 trend_frames.append(focus_df)
@@ -536,11 +539,12 @@ def create_altair_chart(
             max_month = int(hist_x.max())
             x_line = np.arange(1, max_month + 1)
             y_line = slope * x_line + intercept
-            y_line = np.clip(y_line, 0, None)
             hist_df = pd.DataFrame({'Month': x_line, 'Fatal Persons': y_line})
-            hist_df['MonthLabel'] = hist_df['Month'].astype(int).apply(lambda idx: MONTH_LABELS[idx - 1])
-            hist_df['Trend line'] = 'Historical trend'
-            trend_frames.append(hist_df)
+            hist_df = hist_df[hist_df['Fatal Persons'] >= 0]
+            if len(hist_df) >= 2:
+                hist_df['MonthLabel'] = hist_df['Month'].astype(int).apply(lambda idx: MONTH_LABELS[idx - 1])
+                hist_df['Trend line'] = 'Historical trend'
+                trend_frames.append(hist_df)
 
     if trend_frames:
         trend_df = pd.concat(trend_frames, ignore_index=True)
