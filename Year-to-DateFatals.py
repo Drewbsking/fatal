@@ -549,7 +549,6 @@ def create_altair_chart(
     chart = alt.layer(*layers).resolve_scale(color='independent').properties(
         width=min(CHART_WIDTH, 850),
         height=min(CHART_HEIGHT, 520),
-        autosize=alt.AutoSizeParams(type='none', contains='padding', resize=False),
         title=alt.TitleParams(
             text=title_text,
             color='#000',
